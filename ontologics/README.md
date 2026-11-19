@@ -1,0 +1,390 @@
+# Ontologics 공통 기반 v0.3.0 — PostgreSQL + pgvector
+
+## 통합 업무 화면 — A 계산·B 부분/분할 기록·C 접수
+
+공통 웹의 `/#home`에서 검토 대기·보완·승인 후 미반영의 **최신 초안 전체 건수**와 최근 100개 목록, 승인된 생산·자재/계약·납품/클레임 기록을 확인한다. 같은 앱의 메뉴에서 목록·유형/문자열 필터 → 정확한 데이터 버전의 상세 → 연결된 개체/원본 근거로 이동한다. AI 패널은 기본 접힘이며 기존 Knowledge의 `node_id`·version 설명 계약을 재사용한다. 기존 S1/S2 원본 접수·초안·승인·재조회 화면과 사용자 전환은 유지한다.
+
+기존 승인 DB에서 `seed`를 다시 실행하지 않는다. 기존 웹 실행 명령 그대로, 비어 있는 로컬 포트를 선택한다. 예시의 경로/schema는 본인의 기존 설정으로 바꾸고 환경 파일은 Git에 넣지 않는다.
+
+```bash
+python -m ontologics.web serve --development --user alice --port 8062 \
+  --schema EXISTING_DEVELOPMENT_SCHEMA --env-file /absolute/local/.env.local \
+  --model-env-file /absolute/local/.env \
+  --graph-backend neo4j --graph-env-file /absolute/local/.env.graph.local
+```
+
+새 포트는 동일 브라우저 개발 세션·Host 권한/승인·선택 graph backend를 사용한다. 대시보드 건수는 승인 **기록 수**이며 생산량·납품 완료량·불량률이 아니다. 그룹에는 공통 계약이 중복 노출될 수 있으므로 그룹 합계를 회사 전체 수량으로 사용하지 않는다. 조회 오류는 0건으로 바꾸지 않는다. 목록을 새로 불러오기 전까지 상세와 근거는 선택한 버전을 유지한다.
+
+같은 메뉴에서 다음 업무를 실행한다. 기존 사용자 DB를 다른 schema로 복사하거나 시드하지 않는다. A의 기존 `pp_*` 계약·재고는 **같은 DB/schema를 선택했을 때** 표시하며, 공통 그래프에 계약 노드가 있다고 A 계약 원문 보관함에 자동 등록되지는 않는다.
+
+| 화면 | 실행 순서와 결과 | 유지하는 경계 |
+| --- | --- | --- |
+| 생산·자재 계획 | 계약 검색 또는 UTF-8 TXT 접수 → **AI 계약 해석 요청** → 원문·항목별 근거 대조 → 일치하는 구성 연결 → 생산 검토 수량·산정 근거 입력 → 소요량 계산·저장 | 기존 A 계산·재고/예약 차감 재사용. 가용량·실장 미확인은 유지. 원문 대조·계산 저장은 그래프 승인·생산 실행이 아님 |
+| 계약·납품 | 납품 회차·기준 시각 선택 → 현황/조건부 예상 조회. 변경은 부분 생산 누계 또는 분할 배정·출하 입력 → 근거 첨부 → 초안 → 별도 사용자 승인 → 최신 버전 재조회 | 완료 누계는 증분이 아니며 완제품 재고로 자동 전환하지 않음. 기존 미출하 배정의 분할 합계 보존, 재고·회차 초과·중복 검증. 시간 없는 출하는 도착으로 계산하지 않음 |
+| 클레임·대응 | 가상 신고 입력 → 원문 근거와 접수 초안 → Bob 등 별도 검토자 승인 → 신고 일련번호와 보드 직접 대조 → 사건 연결안 → 별도 승인·재조회 | 고객 신고를 불량·고장 원인으로 확정하지 않음. 보드 생산작업/재고 소속의 미합의 관계를 추론하지 않음 |
+
+A 공통 접수·해석은 **600 KB 이하 UTF-8 TXT만 지원**한다. 기존 A PDF 원본은 보존하지만 공통 화면에서는 `A_PDF_SANDBOX_REQUIRED`로 해석을 막는다. A 계약용 격리 PDF 파서 연결은 남은 작업이며 기존 S2 ODS·격리 파서 경로는 유지한다. A의 대체품·예약·구매·창고·일정 후속 화면은 이번 통합에 포함하지 않는다.
+
+공통 AI 패널은 기존 Supervisor·Product·Knowledge·Quality와 동일 도구·근거·버전을 사용한다. A 계약 해석만 별도 명시 버튼으로 기존 고정 provider·공통 한도에 연결했다. B 계산·변경안과 C 접수는 사람이 입력하는 공통 도구 경로이며 Supervisor의 A/B/C 자동 인계나 신규 C Agent를 구현했다고 표현하지 않는다. 모델·비용 설정이 없으면 AI 미연결로 표시하고 원본 접수만으로 유료 호출하지 않는다. 대표 실모델 연결 확인은 범용 Agent 품질 평가·실제 인증·운영 배포 완료와 별개다.
+
+PostgreSQL + pgvector를 실행하고 `.env.local`의 `DATABASE_URL` 또는 별도 `TEST_DATABASE_URL`을 준비한다. 각 검사는 자체 `test_<UUID>` schema를 만들고 정리하며 DB 미설정은 실패로 처리한다. 변경 영향 검사는 아래 모듈을 사용하며, 기존 근거와 최종 통합 검증 상태는 [PROJECT_STATUS](PROJECT_STATUS.md)를 확인한다. 관련 검사를 이미 수행했다면 같은 환경에서 반복하지 않는다.
+
+```bash
+python -m unittest tests.materials.test_workspace tests.order_fulfillment.test_workspace \
+  tests.claim_response.test_workspace tests.test_business_web -v
+```
+
+API와 입력 계약은 [TOOLS의 공통 업무 화면](docs/TOOLS.md#공통-업무-화면-abc)을 따른다. 담당 화면은 `ontologics/static/planning.js`, `fulfillment.js`, `claims.js`, 공통 초안·표시는 `business.js`다. 서버는 역할별 `workspace.py`와 공통 `business_drafts.py`를 재사용하며 승인·신원·한도를 화면에 복제하지 않는다.
+
+
+실제 OLIMEX 사양·BOM을 제품·구성으로 등록하고, 가상 개별 보드·로트 이력과 연결해 조사·보완하는 공통 라이브러리다. S1은 문제 상황 분석 및 생산·사용 이력 보완, S2는 기존 구성 기준에 연결한 제품 등록이다. 현재는 동료의 Agent 개발을 위한 실행 가능한 기준 버전이며 운영 서비스 전체의 완성본은 아니다.
+
+## 시작
+
+Python 3.10+와 PostgreSQL + pgvector가 필요하다. 화면 회귀 검사(`tests.claim_response.test_claims_ui`)에는 Node.js도 필요하며 프런트엔드 빌드 서버는 요구하지 않는다. SQLite·메모리 저장 fallback은 없다. 아래 Compose는 로컬 DB를 편하게 시작하는 방법이며, 이미 pgvector가 설치된 PostgreSQL 서버가 있으면 `DATABASE_URL`만 연결해도 된다. 별도 Agent 서버·MCP는 필요 없다.
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e .
+# 새 환경에서만 복사. 기존 .env.local이 있으면 아래 DB 항목만 추가한다.
+cp -n .env.example .env.local
+```
+
+`.env.local`의 `POSTGRES_PASSWORD`와 `DATABASE_URL` 안의 비밀번호를 같은 로컬 값으로 바꾼다. 값은 Git·채팅에 넣지 않는다. 예시의 `replace-local-password`는 배포용 비밀값이 아니다.
+
+```dotenv
+POSTGRES_PASSWORD=replace-local-password
+DATABASE_URL=postgresql://ontologics:replace-local-password@127.0.0.1:55432/ontologics
+ONTOLOGICS_DB_SCHEMA=ontologics
+```
+
+```bash
+docker compose --env-file .env.local up -d --wait
+# 전체 회귀는 아래 그래프 조회 절의 Neo4j·시험 환경변수도 준비한 뒤 실행한다.
+python -m pip install -e '.[test]'  # A PDF 접수 회귀용 pypdf 포함
+python -m unittest discover -v
+python -m ontologics.demo
+python -m examples.cq_check
+python -m examples.agent_tools
+```
+
+[공통 CI](.github/workflows/tests.yml)는 PR 생성·재개·새 커밋에서 전체 회귀·CQ·도구 예제를 한 번 실행하고, main push에서는 병합된 결과를 같은 검사로 확인한다. PR 대상 브랜치는 제한하지 않으며, feature branch push·tag push의 중복 실행은 만들지 않는다. 같은 PR의 새 실행은 이전 실행을 취소하고, 서로 다른 PR과 main 커밋별 검사는 분리한다. 검사 단계·서비스·권한·실패 판정은 유지한다.
+
+테스트·데모·CQ 확인에는 모델 키가 필요 없다. PostgreSQL 테스트는 `test_<UUID>` 스키마만 만들고 정리한다. 필요하면 `TEST_DATABASE_URL`로 별도 시험 DB를 지정한다. 전체 회귀에는 실제 PostgreSQL과 아래 Neo4j 시험 설정이 필요하며, 미설정 상태를 성공으로 건너뛰지 않는다. 기본 PostgreSQL 데모·웹은 Neo4j 없이 실행할 수 있다.
+
+데모는 **실제 ODS 파싱 → L1 등록 초안 → 개발용 사람 역할 검토 → 승인 반영 → 조사 → 보완 요청·수정 → 재승인 → 같은 조건 재조회**를 실행한다. 승인은 시험용 신원으로 실행되며 실제 운영 승인 이력이 아니다.
+
+데모와 CQ 명령은 매번 새 `demo_<UUID>` 스키마를 만들고 이름을 출력한다. 특정 실행을 보존하려면 `python -m ontologics.demo --schema demo_team_001`처럼 아직 비어 있는 이름을 지정한다. 공통 앱은 `Service(principals=...)`로 환경의 `ONTOLOGICS_DB_SCHEMA`에 연결한다. `Service(database=DatabaseSettings(...), principals=...)`로 명시할 수도 있다. URI나 비밀번호를 출력·공유하지 않는다.
+
+`docker compose --env-file .env.local stop`은 DB만 정지하고 데이터를 보존한다. 데이터는 Git 밖의 Docker named volume에 있다. 기존 SQLite 파일은 삭제하거나 자동 이전하지 않는다. 대표 그래프는 보존된 원본과 기존 승인 데모로 재생성하며, 과거 SQLite 실행 로그·미승인 초안은 새 DB로 복사하지 않는다.
+
+## 확인할 결과
+
+- 실제 L·L1 WROOM BOM: 각각 74행, 위치 128개. 비교되는 원문 위치는 R50, R51, R6, U2다.
+- U104의 제거 기록 보완 전: A와 B 모두 `needs_confirmation`.
+- 제거 및 완전 이력 근거를 승인한 후: A=`excluded`, B=`included`.
+- U106은 계속 `needs_confirmation`, 충분한 부재 근거가 있는 U107은 `excluded`.
+- 데이터 버전은 1(개발 시드) → 2(L1 승인 등록) → 3(U104 승인 보완).
+
+일반 실행 결과는 Git에서 제외된 `artifacts/local/demo_result.json`, CQ 결과는 `artifacts/local/cq_postgres.json`에 기록된다. 공유 검증은 [CQ 결과](artifacts/cq_postgres_verification.json)에서 확인한다. 공유 T-box는 `python -m ontologics.tbox`로 공통+A+B 정의에서 생성하고, `python -m ontologics.tbox --check`로 파일 일치를 확인한다. 인계 A-box까지 의도적으로 갱신할 때만 `python -m ontologics.demo --export-graph`를 사용한다. 이 명령도 같은 T-box 생성기를 사용하며 기존 JSON-LD 참조 context를 충돌 검사해 보존한다. 대상은 `ontology/tbox.ttl`과 `data/initial_graph.jsonld`다. 마지막 파일은 초기 인계용 그래프이며 시나리오 실행 후의 버전 3이다. 실행마다 ID·실행 시각은 달라질 수 있지만 업무 판정은 같다. 원본에서 `data/catalog.json`을 다시 만들려면 `python3 -m ontologics.ingest`를 실행한다.
+
+## S1·S2 웹 통합 — 개발 신원으로 실행
+
+Python CommonHost와 기존 공통 도구를 같은 origin의 HTML·CSS·JavaScript 화면에 연결했다. 별도 프런트엔드 빌드가 없다. **localhost 개발 서버이며 실제 로그인·운영 배포는 미완료**다. 상단의 개발 사용자 선택 박스에서 Alice·Bob·조회 전용 사용자를 바꿀 수 있다. 서버의 허용 목록을 선택하는 기능이며 권한 자체를 편집하지 않는다. 요청마다 서버 IdentityProvider가 신원을 고정하고 도구 입력·Agent는 작성자/권한을 지정하지 않는다.
+
+기존 DB를 초기화하지 않고 새 schema를 사용한다. `--reserve-l1`은 L과 가상 운영 기록만 등록된 기준을 준비하므로 L1은 S2 승인 경로로 등록해야 한다. 옵션을 생략한 기존 시드는 L/L1을 모두 포함하며 S2 최초 등록의 증거가 아니다.
+
+```bash
+python -m ontologics.web seed --development --reserve-l1 --schema web_s1_s2_team_001 --env-file .env.local
+# 서버 한 개에서 상단 선택 박스로 사용자를 전환한다. --user는 최초 기본 사용자다.
+python -m ontologics.web serve --development --user alice --port 8000 --schema web_s1_s2_team_001 --env-file .env.local
+```
+
+`http://127.0.0.1:8000`에서 Alice(조회·초안·검토), Bob(조회·검토), 조회 전용(조회)을 선택한다. Alice로 초안 작성 후 Bob으로 전환하고 업무 현황에서 같은 초안을 열어 승인할 수 있다. 작성자는 바뀌지 않고 Alice 자기 승인은 차단된다. 사용자 전환 시 홈을 다시 불러오며 이전 사용자의 초안/조사·요청 키는 사용자별로 분리해 보존한다. 개발 사용자를 자유롭게 선택할 수 있으므로 실제 로그인이나 서로 다른 실제 사람의 승인 검증은 아니다. 127.0.0.1·정확한 Host·Origin·쿠키·CSRF 검사를 사용한다. 별도 브라우저는 독립적으로 선택하며 같은 브라우저의 다른 탭은 전환 후 새로고침해야 한다. 기존 두 포트 실행 방식도 사용할 수 있다. 실제 인증은 `IdentityProvider.resolve/lookup`과 검증된 요청 문맥에 연결해야 한다.
+
+- **S2:** 제품 구성·BOM 등록에서 `data/sources/ESP32-PoE_Rev_L1-BOM-WROOM.ods` 파일을 접수한다. 실제 바이트 SHA-256으로 개정을 식별하고 74행·128위치·실장 미확인 12행을 표시한다. L과 비교한 변경 위치는 R50·R51·R6·U2다. 등록 초안 저장 후 Bob이 업무 현황의 초안을 열어 원본·차이·검증 결과를 보고 보완 요청/반려/승인한다. 승인된 정확한 버전의 반영 결과를 확인한 뒤 L1 구성을 다시 조회한다. 파일명만 바꾸거나 새로운 부품 조합을 올려도 근거 없는 구성으로 등록하지 않는다.
+- **S1:** 로트 장착 이력 조회에서 A/B 조건을 고정한다. 보존된 U104 시연 보완값 또는 개별 보드·부품 로트 이력 화면의 사용자 제출 가상 기록 JSON으로 보완안을 저장한다. Bob 승인 후 최초 조건 그대로 이전/이후 데이터 버전을 비교한다. U104는 A 추가 확인→조건상 제외, B 추가 확인→장착 이력 확인이며 U106 미확인은 유지한다. 포함은 불량 확인, 제외는 안전 판정이 아니다.
+- **공통:** 업무 현황은 최근 초안/확정 버전, 이력 화면은 보드·로트·장착·제거·완전 이력, 기술 문서·근거 조회는 승인 버전의 키워드/종류/ID 탐색을 제공한다. 새 근거는 초안의 정확한 버전에서 원본 해시를 확인할 수 있다. 초안 작성·검토 승인·확정 반영 상태를 구분한다.
+
+AI 업무 지원은 기존 `.env`/`.env.local` 또는 `--model-env-file`의 `OPENAI_API_KEY`와 고정 모델 설정을 재사용한다. **설정됨은 실제 통신 성공과 다르다.** Supervisor는 명확한 등록/장착 업무 표현을 공통 규칙으로 제한한 뒤 홈의 요청을 한 전문 역할로 인계하고, Product는 접수 후보 설명·명시적 초안 저장, Quality는 누락 조건 질문·조건 제안·A/B 조회/비교, Knowledge는 관계 조회·문자열/의미 검색을 수행한다. 직접 조회와 Agent 도구의 반환값을 대조하며, 이 일치 검사가 자유 설명 전체의 사실성 평가를 대신하지 않는다. Quality의 판정·근거 설명, 의미 검색의 검증된 근거 선택, 초안 저장 결과는 원본 필드로 서버가 구성한다.
+
+- 원본 접수·비교 후 확인란을 선택하고 AI 패널에 “원본 근거와 미확인 상태를 유지해 등록 초안을 저장해줘”를 입력한 뒤 **AI 등록 초안 저장 요청**을 누른다. 직접 저장과 같은 요청 키·후보·검증을 사용한다. 모델 후속 처리 실패에도 저장된 정확한 초안은 표시하며 같은 키로 재시도한다. 승인·확정은 기존 사람 검토 경로다.
+- 조회 전 “U104와 U106의 L07 장착 이력을 조사해줘”는 빠진 시각을 질문한다. `A 2026-09-20T10:00:00+09:00, B 2026-09-01T00:00:00+09:00 부터 2026-09-21T00:00:00+09:00`까지 명시하면 조건 제안을 검토해 **조사 조건에 적용 → 장착 이력 조회**한다. 날짜만으로 시간대를 추정하지 않는다. 이미 조회한 화면은 고정 조건·버전의 설명을 요청한다.
+- 기술 문서·근거 조회에서 문자열/의미 검색을 선택하고 “L1 WROOM 보드의 이더넷 PHY LAN8710 부품 근거”처럼 요청한다. 의미 검색은 아래 색인 준비가 필요하다. 각 답에 대상·버전·원본 위치와 검색 범위가 표시된다. 지속 대화 저장·임의 PDF/OCR·범용 추출 정확도는 아직 완료하지 않았다.
+
+일반 가상 이력 파일은 UTF-8 JSON `{origin:"synthetic",authored_at:"명시적 시각+offset",notice:"시연 근거 설명",records:[...]}`다. records는 기존 SCHEMA의 ProductUnit/ComponentLot/Installation/HistoryCoverage/InventoryMovement 필드(id/type 포함, origin/evidence 제외)를 사용한다. 호스트가 새 SourceDocument/Evidence·해시·JSON 위치를 붙인다. 실제 회사 운영 자료나 고장/안전/가동 필드는 허용하지 않는다. 원본은 Git 제외 `data/receipts/`에 무변경 보존하고 DB와 함께 별도 백업해야 한다. 파일 접수·형식 검증은 사실 확인이나 승인과 다르다.
+
+공통 담당자는 Harness·신원·권한·도구·승인·도메인 계약을 관리하고, 동료는 기존 네 Agent 중 맡은 역할의 고유 기능을 역할 폴더에서 개발·개선한다. 별도 신규 Agent 추가는 필수 요구가 아니다. HTTP 계약은 [TOOLS](docs/TOOLS.md#개발용-http-api와-화면), 실제 검증 범위·제한은 [PROJECT_STATUS](PROJECT_STATUS.md)를 따른다. 영향 검사 후 최종 `python -m unittest discover -v`를 실행한다. 모델 대역·실제 브라우저·실모델 검증은 구분한다.
+
+### RDF·Neo4j 조회를 선택해 실행
+
+기본값은 PostgreSQL이다. `--graph-backend rdf`는 PostgreSQL의 정확한 버전을 RDFLib으로 변환하고 pySHACL 검증 후 고정 SPARQL로 조회한다. `--graph-backend neo4j`는 같은 검증을 거쳐 동기화한 Neo4j 관계를 조회한다. **초안·승인·확정 버전의 정본과 pgvector 검색은 PostgreSQL에 유지한다.** A/B 계산·권한·Agent 도구 계약은 공통 코드를 재사용하며, 임의 OWL 추론이나 새 CQ 지원을 추가하지 않는다. 상세 공개 조건은 [TOOLS](docs/TOOLS.md#후속-통합배포-설계-미구현)를 따른다.
+
+Neo4j를 사용할 때만 Git 제외 로컬 파일 `.env.graph.local`에 아래 설정을 작성한다. 비밀번호는 본인이 정한 로컬 값으로 바꾸고 공유하지 않는다.
+
+```dotenv
+ONTOLOGICS_GRAPH_BACKEND=neo4j
+ONTOLOGICS_GRAPH_NAMESPACE=ontologics-local
+NEO4J_URI=bolt://127.0.0.1:17687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=replace-local-graph-password
+NEO4J_DATABASE=neo4j
+```
+
+```bash
+docker compose --env-file .env.local --env-file .env.graph.local -f compose.yaml -f compose.graph.yaml up -d neo4j
+# 위 웹 절에서 준비한 schema의 개발 시드 v1을 먼저 공개한다. 기존 seed를 반복하지 않는다.
+python -m ontologics.graph_projection sync --schema web_s1_s2_team_001 --version 1 --request-key graph-v1-initial --env-file .env.local --graph-env-file .env.graph.local
+python -m ontologics.graph_projection status --schema web_s1_s2_team_001 --version 1 --env-file .env.local --graph-env-file .env.graph.local
+python -m ontologics.web serve --development --user alice --port 8000 --schema web_s1_s2_team_001 --env-file .env.local --graph-backend neo4j --graph-env-file .env.graph.local
+```
+
+처음 컨테이너가 준비 중이면 `GRAPH_UNAVAILABLE` 원인을 해결한 뒤 같은 동기화 키로 재시도한다. `status`의 `ok=true`, `data.status=ready`는 해당 버전의 실제 Neo4j 조회·내용 검증 성공이다. 기존 `--model-env-file`·`--sandbox-socket` 옵션은 같은 serve 명령에 유지한다. PostgreSQL 시드·과거 승인 버전은 자동 일괄 동기화하지 않으므로 전후 비교에 사용할 각 버전을 `--version`과 해당 버전의 고유 요청 키로 먼저 동기화한다. 개발 시드는 사람 승인이 아닌 `source_status=development_seed`로 구분한다.
+
+Neo4j 모드의 CommonHost는 사람 승인 후 PostgreSQL 반영을 완료한 다음 새 데이터 버전을 동기화한다. 반영 응답의 `data.graph_projection.status=ready`와 `pending`을 구분한다. `pending`이면 PostgreSQL 승인은 유지되지만 해당 버전의 그래프 조회는 차단한다. 같은 승인 요청을 재시도하면 확정 데이터를 중복 반영하지 않고 동기화를 다시 확인한다. CLI의 **이미 성공한** 동기화 키는 이전 성공 응답을 재생하므로, 복구 후 재검증·재동기화에는 `status`와 새로운 `--request-key`를 쓴다. 손상·다른 내용으로 같은 버전을 덮어쓰는 수리는 허용하지 않는다. 백그라운드 자동 재시도·강제 종료 복구는 제공하지 않는다.
+
+```bash
+# 모델 호출 없이 새 demo schema에서 동일 CQ를 PostgreSQL/SPARQL/Neo4j로 대조한다.
+python -m examples.graph_cq_check --env-file .env.local --graph-env-file .env.graph.local
+python -m unittest tests.test_graph_rdf -v
+```
+
+실제 Neo4j·HTTP 통합 및 전체 회귀를 실행하려면 `.env.local` 또는 프로세스 환경에 같은 `NEO4J_*`·`ONTOLOGICS_GRAPH_NAMESPACE` 설정과 `TEST_NEO4J_URL`·`TEST_NEO4J_USER`·`TEST_NEO4J_PASSWORD`를 준비한다. unittest는 `.env.graph.local`을 자동으로 읽지 않는다. `python -m unittest tests.test_graph_neo4j tests.test_graph_integration -v`는 별도 시험 namespace/schema를 사용한다. CQ 실행 결과는 Git 제외 `artifacts/local/cq_graph_backends.json`에 저장한다. 실제 인증·AWS·운영 백업/복구 완료를 뜻하지 않는다.
+
+### A 생산계획 / B 계약·납품 / C 클레임 타입 통합 (`graph-0.4`)
+
+PR #9·#10의 신규 업무 11종, PR #6의 C 1차 6종과 #7의 C 2차 3종을 기존 12종과 함께 공통 저장·검증·조회·RDF·Neo4j로 연결했다. 정의는 `ontologics/domain_schema.py`, 공통 실행은 `model.py`다. 동료는 역할 내부 계산을 수정하고 공개 타입·근거·승인 의미 변경은 공통 계약 검토를 거친다. A/B 호환 Service·Host도 공통 승인 경로를 사용한다. 상세 계약은 [TOOLS](docs/TOOLS.md#ab-신규-업무-타입의-공통-저장조회)를 참조한다.
+
+```bash
+# 위 Neo4j 설정 + 새 namespace (예: ontologics_graph04)와 별도 시험 PG를 사용
+# 이전 graph-0.1/graph-0.2/graph-0.3 namespace를 덮어쓰지 않는다.
+python -m ontologics.tbox --check
+python -m examples.ab_graph_check --schema test_ab_team_001
+python -m unittest tests.test_domain_graph tests.test_ab_graph_integration -v
+python -m unittest tests.test_c_graph_rdf tests.test_c_graph_integration -v
+```
+
+예제 기대 결과는 `passed: true`, 신규 11종 조회 일치, 자기 승인/구 초안 버전 차단, 승인 후 동일 시간 조건에서 U104 A 제외/B 포함·U106 미확인 유지다. 기존 원본·가상 입력을 사용하고 모델 API를 호출하지 않는다. 최초 시드는 개발 자료이며 이후 승인도 개발 신원 검증이다. 기존 데이터의 스키마 업그레이드는 초안/승인 원장 변경 없이 새 namespace에 필요한 승인 버전만 명시적으로 재동기화한다. 실행 명령·환경변수는 바로 위 절을 따른다.
+
+A 웹 `contract_library_web`은 호스트 환경의 조회 backend를 사용한다. B 저수준 `make_host(..., graph_settings=...)`는 호출자가 명시 주입하며 기존 기본값은 PostgreSQL이다. 격리 시나리오 예제의 고정 대역·별도 업무 테이블·자동 승인 없는 산출물을 공통 확정 데이터와 구분한다. S1 JSON 이력 접수 범위는 기존 5종으로 유지한다.
+
+Neo4j Browser의 `:style`에서 `ontology/neo4j-browser.grass`를 불러오면 32종을 이름·색상으로 구분한다. 신규 승인 동기화 시 타입 label과 caption은 자동 생성되지만 브라우저별 스타일 가져오기는 한 번 필요하다.
+
+C 검사는 가상 1차 6종과 2차 3종의 초안·자기 승인 차단·정확한 버전 반영·동기화 실패/재시도와 PostgreSQL/SPARQL/Neo4j 조회 일치를 대상으로 한다. `graph-0.4`는 C 2차 추가를 구분하는 공개 스키마 버전이며 Neo4j 직렬화 형식은 `neo4j-projection-2`를 유지한다. 기존 `graph-0.2`/`graph-0.3` namespace는 그대로 두고 새 namespace에서 필요한 승인 버전을 재동기화한다. 이전 읽기 체크포인트는 버전 불일치로 재개하지 않으며 새 요청으로 조회한다. 저장된 초안·승인·operations/hash는 재작성하지 않는다. 구성별 재생산 계산 수정은 C 담당 범위로 별도 검증하며, 실제 중단/출고 실행과 C 화면·Agent 라우팅 통합은 이번 범위가 아니다.
+
+## 개발용 사용자 신원과 공통 호스트
+
+아래 Python 예제는 로그인 없이 호스트가 지정한 개발 사용자로 등록·검토·반영 경로를 실행한다. **신원 연결과 권한 규칙의 개발 검증이며 실제 인증 완료가 아니다.** 브라우저 연결은 위 웹 통합 절차를 사용하며 실제 로그인·인증 세션은 아직 제공하지 않는다.
+
+```bash
+python3 -m examples.host_workflow
+# 다른 로컬 설정 파일을 사용할 때
+python3 -m examples.host_workflow --env-file /path/to/.env.local
+python3 -m unittest tests.test_host -v
+```
+
+예제는 모델 키 없이 새 `host_demo_<UUID>` PostgreSQL 스키마에서 실행된다. 개발 사용자 `dev-alice`의 Product 초안은 `author=user:dev-alice`로 기록된다. Alice의 자기 승인은 `SELF_APPROVAL_FORBIDDEN`, 미승인 반영은 `APPROVAL_REQUIRED`, 보완 전 버전 반영은 `SUPERSEDED_DRAFT`다. 다른 개발 사용자 Bob의 검토 뒤 정확한 버전만 반영되며 L1 74행 등록, U104 보완 후 A 제외/B 포함, U106 미확인 유지와 재시도 `IDEMPOTENT_REPLAY`를 확인한다. 예제의 개발 시드와 Bob의 검토 대역은 실제 자료 접수·사용자 인증·운영 승인 완료 근거가 아니다.
+
+동료는 [host.py](ontologics/host.py)의 `CommonHost.request()`로 요청 신원을 한 번 고정하고 `RequestSession.agent('product'/'quality'/'knowledge'/'supervisor')` 또는 `run_agent()`를 사용한다. `review()`는 사람의 호스트 동작, `apply_approved()`는 서버 워크플로 동작이며 Agent에 노출하지 않는다. 신원 공급자는 [identity.py](ontologics/identity.py)의 `resolve(context)`·`lookup(subject)` 접점으로 교체한다. 개발 사용자 선택은 명시적 개발 HTTP 경로에만 있으며 운영 인증으로 사용하지 않는다. 호출 예제·권한·오류 경계는 [TOOLS](docs/TOOLS.md#개발용-사용자-호스트)를 따른다.
+
+## A·B·C 동료 개발의 공통 시작점
+
+main `05d55c7`(PR #6·#11·#12·#13 반영)의 공통 기반에서 #7의 C 2차를 `graph-0.4`로 확장한다. 구현·검증 상태는 PROJECT_STATUS를 따른다. 아래 A/B/C는 업무 패키지 구분이며 시간 조회 A/B나 기본 네 Agent(Supervisor·Product·Knowledge·Quality)와 다르다. 공통 담당자는 [TOOLS의 공통 기반 기준](docs/TOOLS.md#abc-공통-기반-기준)을 관리하고, 동료는 맡은 업무의 지침·입력 해석·처리 흐름·고유 검증·회귀 사례를 개발한다. 구체적인 사람별 담당자는 여기서 지정하지 않는다.
+
+| 담당 | 실제 개발 위치와 재사용 경로 | 현재 시작점·검사 |
+| --- | --- | --- |
+| 공통 | `model.py`·`domain_schema.py`·`tbox.py`, `contracts.py`, `host.py`·`identity.py`, `service.py`·`temporal.py`, `harness.py`·`runtime.py`·`paid_budget.py`, `graph_*.py`·`sandbox.py` | [공통 계약](docs/TOOLS.md), [실행 지침](docs/AGENT_RUNTIME.md). 도메인 변경은 `tests.test_domain_graph`, `tests.test_ab_graph_integration`, `tests.test_c_graph_rdf`, `tests.test_c_graph_integration` 중 영향 범위 검사 |
+| A 자재 관리 | [materials/](ontologics/materials/). `MaterialsHost`는 공통 Host를 상속하며 기존 `run_agent` 호환 경로와 고유 결과 계약을 사용 | [A 흐름](docs/MATERIALS_FLOW.md), `tests.materials.test_agent`, `tests.materials.test_contract_library` |
+| B 계약·납품 | [order_fulfillment/](ontologics/order_fulfillment/), [B task 예제](examples/order_fulfillment/b_task_workflow.py). 공통 Task/Result 연결과 확정 그래프 읽기 어댑터를 구별 | [B 실행 안내](docs/order_fulfillment/README.md), `python -m examples.order_fulfillment.b_run tasks --output /absolute/new/run`. 현행 실행기는 macOS `sandbox-exec` 전용이며 Windows/WSL 지원은 미검증이다. PostgreSQL/pgvector 실행 파일 위치가 기본값과 다르면 `--pg-bin`을 지정하고, 기존 부모 아래 새 출력 경로를 사용한다. 모델 대역이며 현행 공통 스키마는 루트 TOOLS의 graph-0.4이 기준이다(B 문서의 구 PR 기록과 구별). 옛 `free/live`·`b_host_agent` 저장그래프 실행 경로는 폐기됨 |
+| C 클레임 대응 | [claim_response/schema.py](ontologics/claim_response/schema.py). 현재 1·2차 9종 schema·공통 저장/승인·RDF/Neo4j 연결이며 업무 Agent·화면은 미구현 | [C 허용 데이터](docs/claim_response/DATA_POLICY.md), `tests.claim_response.test_schema`, `tests.test_c_graph_rdf`, `tests.test_c_graph_integration` |
+
+개발 순서는 **TOOLS의 식별·근거·버전·승인 경계 확인 → 담당 패키지와 실제 실행 경로 확인 → 기존 [typed 연결 예제](#동료의-확장-agent-연결)에서 고유 INPUT/OUTPUT·지침·흐름·검증기 참고 → 담당 기능 구현 → 변경 영향 검사**다. 새 Agent를 등록해야 할 때만 호스트 등록을 추가한다. 공통 모델/provider·도구·누적 한도·격리 파서는 재사용하며 별도 권한·예산·승인·확정 저장을 만들지 않는다.
+
+현재는 A→B→C 자동 업무 인계가 완성된 상태가 아니다. B의 미등록 입력 해석 결과나 A 계획 문서를 승인된 그래프 사실로 자동 등록하지 않는다. C의 생산 작업 ID·보드별 재고/출하 연결은 아래 공통 기준의 미합의 경계를 따른다. 개발 중에는 해당 역할·경계 검사만 실행하고 통합 마감의 전체 회귀는 위 CI 정책으로 확인한다.
+
+## 실제 Agent 담당 폴더와 연결
+
+실제 네 Agent 구현은 `ontologics/agents/<역할>/`에 있다. 담당자는 해당 폴더의 `instructions.py`에서 지침, `workflow.py`에서 처리 순서, `schemas.py`에서 역할 payload, `agent.py`와 필요한 `validators.py`에서 결과 해석·검증을 수정한다. 공통 `RoleAgent`는 메시지 보존·필수 도구 호출 확인만 공유하고 역할의 해석은 각 구현에 위임한다. 모든 역할에 planner/critic 파일을 만들지 않았다.
+
+```text
+변경 전
+ontologics/
+  builtin_agents.py     # 네 역할 schema·결과 해석
+  assistant.py          # 역할 인계·등록·조건 제안·검색
+  web.py                # HTTP + Quality 조사·판정 검증
+examples/llm_agents.py  # CLI 실행 + Product/Quality 지침·평가
+
+변경 후
+ontologics/agents/
+  supervisor/          # agent.py, schemas.py, instructions.py, workflow.py
+  product/             # 위 파일 + validators.py, sample_cli.py
+  knowledge/           # 위 파일 + validators.py
+  quality/             # 위 파일 + validators.py, sample_cli.py
+  registry.py          # 고정 네 역할 등록·dispatch, Task 생성
+  base.py              # 공유 계약 연결, 역할별 decode 위임
+  execution.py         # 공통 읽기 실행·직접/Agent 결과 대조
+  service.py           # HTTP와 독립적인 AI 요청 진입점
+  sample_support.py    # 기존 소규모 CLI의 공통 fixture
+ontologics/web.py        # HTTP·개발 세션·화면 전송만
+ontologics/assistant.py  # 이전 import 호환 export만
+ontologics/builtin_agents.py # 이전 생성자·계약 목록 호환만
+examples/llm_agents.py   # CLI 실행·보고, 역할 폴더 구현 재사용
+```
+
+실제 화면 `/api/assistant` → `agents.service.assistant` → Supervisor 인계 또는 `registry.run_screen` → 담당 역할 `workflow` → `RequestSession.run_task` → 공통 Harness·provider·도구로 이어진다. `/api/quality`는 같은 `quality.workflow.investigate`를 사용한다. `AgentApplication`에는 호스트·호스트가 해석할 신원 context·고정 provider·모델만 전달한다. 역할 모듈은 HTTP 모듈을 import하지 않는다. 기존 CLI 두 행/U104 예제는 역할 폴더의 `sample_cli.py`를 사용하는 제한된 예제이며 전체 화면 흐름을 대신하지 않는다.
+
+1. 기존 역할 담당자는 해당 폴더만 수정하고 그 역할의 테스트를 실행한다. 보통의 지침·내부 순서·검증 수정에 다른 역할이나 공통 실행 코드 수정은 필요 없다.
+2. 공개 Task/Result payload·도구 인자·도메인·권한·외부 전송을 바꾸면 별도 공통 계약 검토가 필요하다. `schemas.py`에 있다는 이유로 공개 필드를 임의 변경하지 않는다. 의미가 바뀌는 지침/검증에는 역할 버전과 회귀 사례를 함께 검토한다.
+3. 새로운 동료 역할은 아래 [확장 Agent 연결](#동료의-확장-agent-연결)의 `AgentSpec`·호스트 등록을 사용한다. 고정 네 역할을 subclass로 사칭할 수 없으며 새 역할의 허용 도구는 호스트 검토로 등록한다.
+4. 신원·작성자·승인·A/B 계산·확정 저장·누적 한도·Sandbox는 기존 공통 모듈을 사용한다. Agent는 별도 예산 생성, 직접 DB 쓰기나 승인 호출을 하지 않는다.
+
+```bash
+# import/등록/의존 방향·checkpoint 계약: DB·모델 불필요
+python -m unittest tests.test_agent_packages -v
+# 담당 흐름의 HTTP·도구 검증: PostgreSQL, 모델은 테스트 대역
+python -m unittest tests.test_agent_workflows tests.test_assistant tests.test_web tests.test_semantic_search -v
+# 기존 CLI 입출력·근거 검사: PostgreSQL, 유료 호출 없음
+python -m unittest tests.test_llm_examples -v
+# 통합 마감에 한 번 전체 회귀. 실제 Docker 격리 시험 설정은 아래 보안 절 참조
+python -m unittest discover -v
+```
+
+저장 초안·DB·공개 HTTP 계약은 그대로다. 구현 위치/검증기 fingerprint가 달라진 **이전 builtin 읽기 checkpoint는 재개를 거부**하고 현재 조건으로 새 읽기를 시작한다. 신규 checkpoint는 역할 helper 변경도 감지한다. 이번 변경은 확장 Agent의 fingerprint에 불필요한 키를 추가하지 않는다. 쓰기 재실행·강제 종료 복구를 추가한 것은 아니다.
+
+## 실제 LLM 실행과 동료 개발 시작
+
+공통 provider는 OpenAI Responses API와 **`gpt-5.4-mini-2026-03-17` 한 모델**을 사용한다. Python 표준 라이브러리로 연결하며 추가 SDK 설치는 없다. API 호출에는 계정 사용량이 발생한다. 예제는 공개 OLIMEX 행 정보와 가상 운영 기록을 전송한다.
+
+`.env.example`을 참고해 로컬 `.env.local`에 다음 값을 설정한다. API 키는 각자 로컬에서 입력하며 채팅·Git에 넣지 않는다.
+
+```dotenv
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-5.4-mini-2026-03-17
+OPENAI_TIMEOUT_SECONDS=30
+OPENAI_MAX_OUTPUT_TOKENS=4096
+ONTOLOGICS_REQUEST_MAX_COST_USD=
+ONTOLOGICS_MODEL_PRICES_JSON=
+```
+
+실제 유료 호출 전에는 `.env.example`의 형식으로 **요청별 USD 상한과 고정 모델 단가를 모두 명시**해야 한다. 비어 있으면 `COST_POLICY_REQUIRED`로 외부 호출 전에 중단한다. 팀 운영 상한은 기본값으로 정하지 않았다. 키 설정과 비용 정책 설정은 별개이며, 직접 조회·초안·사람 승인에는 모델이 필요하지 않다. 웹 요청의 Supervisor→전문 역할·장애 재시도·의미 검색 임베딩은 같은 예산을 공유한다. `llm_agents --role both`는 두 예제 전체, `index_evidence`는 한 색인 실행 전체의 한도를 공유한다. 개인 평가 예산이나 계정 전체 청구 상한을 대신하지 않는다.
+
+예약은 고정 모델의 전체 입력 상한(Responses 400,000, 임베딩 요청 300,000 tokens)과 출력 한도로 계산한다. 작은 요청도 이 예약액을 수용해야 한다. 응답의 사용량이 확인되면 차액을 해제하고, 미보고·응답 유실은 예약을 유지한다. 캐시 할인은 한도 계산에서 가정하지 않는다. 단가는 운영자가 확인하며 [고정 모델 가격](https://developers.openai.com/api/docs/models/gpt-5.4-mini)과 [임베딩 가격](https://developers.openai.com/api/docs/models/text-embedding-3-small)을 참고한다. 추정 사용량 기록은 실제 청구서가 아니다.
+
+```bash
+python3 -m examples.llm_agents --role both
+python3 -m examples.llm_agents --role product
+python3 -m examples.llm_agents --role quality
+```
+
+한 명령만 골라 실행하면 된다. 설정 우선순위는 프로세스 환경변수 → `.env.local` → `.env`다. `--env-file 경로`를 쓰면 해당 파일과 프로세스 환경만 사용한다. 모델·DB 설정은 `KEY=value` 데이터로 읽으며 셸로 실행하지 않는다. 모델명을 다르게 지정하면 명시적으로 실패한다.
+
+매 실행은 PostgreSQL에 역할별 새 `llm_<role>_<UUID>` 스키마를 만들고, `artifacts/llm_runs/run-<시각>-<ID>/report.json`에 그 이름과 결과를 남긴다. 보고서에는 모델 호출 상태·토큰 수·실제 도구 입력/출력·최종 답·자동검사·원본 URL/위치가 있다. 키와 HTTP 오류 원문은 기록하지 않는다. 로컬 실행 DB·보고서·환경 파일은 Git에서 제외한다. 재실행은 별개의 시드/업무 예제이며 운영 변경의 자동 재시도가 아니다.
+
+| 실행 | 기대 결과 | 동료가 수정할 위치 |
+| --- | --- | --- |
+| Product | 이미 파싱한 L1 U4·R50 두 행의 `awaiting_review` 초안과 검증 결과. R50은 `population=unknown`. 확정 데이터 버전 1 유지 | [product/sample_cli.py](ontologics/agents/product/sample_cli.py)의 지침·task·검사 (화면 구현은 같은 폴더의 workflow.py) |
+| Quality | U104, L07, 버전 2→3 비교. A 미확인→제외, B 미확인→포함. 실제 BOM 근거와 가상 이력 근거 분리 | [quality/sample_cli.py](ontologics/agents/quality/sample_cli.py)의 지침·task·검사 (화면 구현은 같은 폴더의 workflow.py) |
+| 공통 연결 | 신원 고정·도구 검증·실행 기록·제한된 재시도 | [runtime.py](ontologics/runtime.py), [openai_provider.py](ontologics/openai_provider.py), [tool_specs.py](ontologics/tool_specs.py). 역할별 복제 없이 재사용 |
+
+Quality 버전 2/3은 **모델 호출 전 호스트가 기존 데모 승인 경로로 준비한 시험 데이터**다. LLM 작성 초안을 자동 승인하는 기능이 아니다. Product 예제는 대표 두 행의 초안 작성까지이며, 전체 S2 등록·보완·승인 흐름은 위 오프라인 데모에서 확인한다.
+
+PostgreSQL 전환의 실제 API 결과와 실패·수정 이력은 [검증 요약](artifacts/llm_verification.json)에 기록한다. 자동검사는 조건·상태·근거 ID·미확인 필드·확정 데이터 불변을 검사하며 일반적인 Agent 정확도 점수가 아니다. 모델이 원본 PDF를 직접 검토한 결과도 아니다. 정확한 시각·offset은 task/tool trace를 기준으로 표시한다.
+
+오류가 나면 `report.json`의 `roles[].runtime.error`와 `roles[].provider_calls`를 확인한다. 실행 전 설정 오류는 최상위 `error`에 있다. 키 누락·인증·모델 접근·입력 오류는 즉시 종료하고, timeout·연결 실패·429·5xx만 기존 런타임에서 최대 2회 시도한다. provider는 `parallel_tool_calls=false`로 한 번에 한 도구를 요청하며, 예제는 최대 12모델 단계다. 공통 런타임의 배치 검증·호출 제한은 유지한다. 성공한 초안은 이후 실패해도 미승인 상태로 남는다. 오류 코드·구체적 입출력은 [TOOLS](docs/TOOLS.md#실모델-예제의-입출력)에서 확인한다.
+
+## pgvector 근거 검색을 연결하는 위치
+
+`ontologics/retrieval.py`의 `EvidenceIndex`는 승인된 데이터 버전의 Evidence·SourceDocument·연결된 사실을 텍스트로 제공하고, 호스트가 만든 임베딩을 PostgreSQL `vector` 열에 저장·검색한다. 모델 이름·차원·내용 해시·데이터 버전을 구분하고 실제/가상 필터와 원본 locator를 반환한다. 원본은 파일로 보존하고, 그래프·초안·승인·실행 기록의 정본과 벡터는 PostgreSQL에 둔다. Neo4j는 선택적으로 동기화하는 조회용 저장소이며, 이를 선택해도 pgvector 검색은 PostgreSQL에서 실행한다.
+
+`python -m examples.cq_check`의 3차원 수치 벡터는 기존 SQL 검사다. 실제 의미 검색은 `OpenAIEmbeddings`의 고정 `text-embedding-3-small`/1536차원으로 문서와 질문을 변환한다. 기존 LLM과 목적이 다른 임베딩 모델이며 동적 라우팅은 없다. [공식 Embeddings API](https://developers.openai.com/api/reference/resources/embeddings/methods/create)를 따른다.
+
+```bash
+# 위 S2를 승인한 실제 데이터 버전으로 지정한다. 예시 버전 2를 무조건 사용하지 않는다.
+python -m examples.index_evidence --schema web_s1_s2_team_001 --version 2 --env-file .env.local --model-env-file .env.local
+```
+
+별도 키 변수 없이 기존 `OPENAI_API_KEY`를 사용한다. 원본 text는 DB 트랜잭션 밖에서 API에 보내며 반환 모델·차원·유한값·입력 순서를 검사한다. `selection_complete`는 선택 범위, `snapshot_complete`는 전체 Evidence 범위의 색인 완료다. 8192 UTF-8 bytes 초과 근거는 자르지 않고 `unindexed`에 남긴다. 재실행은 같은 모델/버전/hash의 기존 캐시를 보존하고 누락분만 처리한다. 새 승인 버전은 따로 색인해야 하며 미색인 버전을 이전 버전으로 자동 대체하지 않는다.
+
+의미 검색은 `semantic_search(query, origin, version)` 공통 도구로 연결된다. `index` 권한·DB·provider 객체는 Agent에 공개하지 않는다. `candidate_only=true`와 부분 색인 경고를 유지하며 유사도는 부품 동일성·장착 판정·승인 또는 사실 확률이 아니다. 작은 데이터에 맞춘 정확 cosine 검색이며 ANN 최적화·범용 RAG 품질 보장은 별도다.
+
+## 동료의 확장 Agent 연결
+
+동료가 맡은 기존 네 역할을 개선할 때는 위 [담당 폴더와 연결](#실제-agent-담당-폴더와-연결)을 사용하며 새 Agent 등록은 필요하지 않다. 아래는 별도 신규 역할이 필요한 경우의 선택적 확장 절차다. 기존 역할과 구별한 `AgentRegistration(name, instructions, allowed_tools)`를 호스트 시작 코드에서 등록한다. `CommonHost(..., agent_registrations=(registration,))` → 요청 신원 고정 → `request.run_agent(registration.name, provider, messages, config=...)` 순서다. 도구는 기존 `AgentGateway.ALLOWED`의 부분집합이며 등록 자체가 사용자 권한을 늘리지 않는다. 승인·반영·seed·색인 도구는 등록할 수 없다. HTTP 요청이나 모델 출력으로 역할을 등록하지 않는다.
+
+```bash
+python -m examples.extension_agent --schema web_s1_s2_team_001 --version 2 --env-file .env.local
+python -m unittest tests.test_agent_extensions -v
+```
+
+[extension_agent.py](examples/extension_agent.py)는 연결 계약을 보여주는 모델 대역 예제다. 버전 계약을 사용하는 새 역할은 [역할별 예제 폴더](examples/agents/)를 시작점으로 삼는다. `model_reader.py`는 한 번의 제품 조회, `history_reader.py`는 A→B 순차 조회이며 각 파일에 고유 INPUT/OUTPUT·INSTRUCTIONS·messages·결과 검증기를 둔다. 공통 신원·실행·승인 로직은 복제하지 않는다.
+
+1. 고유 역할 모듈에 `AgentSpec`과 `messages(task)`, 필요하면 `validate_result(value, task, tool_results)`를 정의한다. 실제 도구 결과와 일치해야 하는 값은 검증기에서 대조한다.
+2. 신뢰된 호스트 시작 코드가 `AgentRegistration.from_spec(SPEC)`으로 등록하고 `AgentTask(payload, PinnedContext(...))`를 만든다. 요청 사용자는 IdentityProvider를 통해 고정한다.
+3. `request.run_task()`로 실행한다. 같은 고정 모델을 쓸 때는 기존 `OpenAIProvider(settings, SPEC.requested_tools)`를 주입한다. 기본 예제는 모델 대역이며 유료 호출이 없다.
+4. 아래 계약 검사를 실행하고 담당 역할의 사례를 추가한다. 웹 라우팅은 담당자가 명시적으로 연결하며 자동 플러그인 등록은 지원하지 않는다.
+
+```bash
+python -m examples.extension_agent --typed --flow model --schema web_s1_s2_team_001 --version 2 --env-file .env.local
+python -m examples.extension_agent --typed --flow history --schema web_s1_s2_team_001 --version 2 --env-file .env.local
+python -m unittest tests.test_agent_contracts tests.test_agent_extensions tests.test_harness -v
+```
+
+실제 존재하는 확정 버전을 지정한다. 기대 결과는 `runtime.ok=true`, `schema_version=agent-result-1`, 고정 context와 검증된 `evidence_refs`, `error=null`이다. history의 `by_mode`는 같은 버전 공통 investigate의 A/B 결과와 같고 U106은 미확인으로 남는다. 모형/가상 이력 데이터가 없는 DB에는 위 예제를 그대로 적용하지 않는다. 고유 기능 자율 변경과 공통 검토 경계는 [Agent 지침](docs/AGENT_RUNTIME.md#확장-agent의-수정-경계), 저장된 작업의 호환 확인은 [TOOLS](docs/TOOLS.md#공개-계약과-저장된-작업의-호환성)을 따른다.
+
+## 공통 실행 계약과 격리 파서 — 로컬 개발 보완
+
+기존 `run_agent` 호환과 네 화면 Agent의 업무 검증은 유지한다. 실제 화면 경로도 역할별 공통 Task/Result 어댑터를 사용한다. 요청·하위 Agent는 `ExecutionBudget`의 모델/도구/repair 횟수·deadline·명시한 비용 정책을 공유한다. **복구 반복 기본값 0은 읽기 작업의 LLM 응답 형식 수정(`max_repairs`)**이며 자동 재검색을 뜻하지 않는다. 설정 허용 범위는 0~2회지만 공통 잔여 한도를 넘지 못한다. 권한·버전·근거·의미 오류는 수정 반복으로 통과시키지 않는다. 일시 장애 재시도·읽기 재개·멱등 처리와의 차이는 [TOOLS](docs/TOOLS.md#반복과-복구의-구분)에 정리했다. deadline/취소는 호출 경계에서 검사하고 provider timeout을 잔여 시간으로 줄인다. 동기 호출·DB 작업을 강제 종료하는 기능은 아니다.
+
+입출력 계약이 필요한 확장 Agent는 `AgentSpec`의 이름·버전·PayloadSchema·필요 도구·한도를 정의하고 `AgentRegistration.from_spec()`으로 등록한다. `AgentTask`와 `PinnedContext`를 `request.run_task()`로 전달하는 예제는 다음과 같다. 기존 등록 방식도 사용할 수 있다.
+
+```bash
+python -m examples.extension_agent --typed --schema web_s1_s2_team_001 --version 2 --env-file .env.local
+```
+
+`resume_task()`는 반환된 읽기 작업을 동일 조건으로 다시 시작하는 제한된 접점이다. 신원·현재 버전·계약·provider·프롬프트·잔여 한도와 동일 비용 정책을 재검사한다. 미보고 사용량의 예약도 재개할 때 복원한다. 중간 강제 종료의 자동 복구나 Product 쓰기의 임의 재생은 지원하지 않는다. 상세 계약은 [TOOLS](docs/TOOLS.md#공통-harness와-버전-agent-계약)를 따른다.
+
+파일 파싱을 격리하려면 검토된 파서 이미지와 별도 로컬 controller를 실행한다. controller만 Docker를 제어하며 웹에는 제한된 Unix socket client만 전달한다.
+
+```bash
+docker build -f deploy/docker/sandbox.Dockerfile -t ontologics-parser:dev .
+mkdir -p /tmp/ontologics-parser-dev
+chmod 700 /tmp/ontologics-parser-dev
+docker image inspect ontologics-parser:dev --format '{{.Id}}'
+# 위 명령의 sha256:... 값을 사용한다. 별도 터미널에서 controller를 유지한다.
+python -m ontologics.sandbox --socket /tmp/ontologics-parser-dev/parser.sock --image-id sha256:확인한이미지ID --docker /usr/local/bin/docker
+# 다른 터미널에서 기존 개발 DB에 연결한다.
+python -m ontologics.web serve --development --user alice --port 8000 --schema web_s1_s2_team_001 --env-file .env.local --sandbox-socket /tmp/ontologics-parser-dev/parser.sock
+```
+
+Docker 실행 파일 위치는 설치 환경에 맞춘다. 이미지 ID·socket·mount·명령은 신뢰된 시작 설정이며 사용자가 화면/Agent로 지정할 수 없다. 설정된 controller가 없거나 실패하면 호스트 파서로 우회하지 않는다. 기존 비격리 접수는 읽을 수 있지만 격리 모드의 새 비교·초안에는 원본 재접수가 필요하다. 이미 저장된 초안의 같은 요청 키 재생은 중복 생성하지 않는다. 미설정 방식은 기존 개발 호환 경로로, ODS는 원본 manifest 해시 대조, 이력 JSON은 제출 바이트 해시 계산과 허용 스키마 검증을 사용한다. 이 경로는 격리 실행으로 표시하지 않는다.
+
+Sandbox는 네트워크 차단·non-root·읽기 전용 루트/입력·CPU/메모리/PID/시간/출력 제한을 적용한다. Docker Desktop 검증이며 rootless·호스트 LSM·운영 프로세스 격리 완료를 의미하지 않는다. 개인 비교 평가·정답·원시 결과는 저장소 밖 `EVAL_HOME`에 두며 Git·CI artifact·외부 추적 서비스로 자동 전송하지 않는다.
+
+## 저장소 공유 상태
+
+저장소는 [Ontologics-2Zo/ontologics](https://github.com/Ontologics-2Zo/ontologics), clone 주소는 `https://github.com/Ontologics-2Zo/ontologics.git`이다. **2026-11-04 확인한 main은 PR #7 병합 `2cdfe9b3abe0810bb54fedc7320d8a9169eabd29`**이다. 이번 A/B/C 공통 화면 연결은 `codex/unified-workspace-20261104`에서 별도 PR로 검토하며 main 병합 여부는 해당 PR을 확인한다. 사용자는 공개 저장소에 팀 코드 공유를 허용했으며, 개인 평가·경험 기록·환경 파일·비밀값은 제외한다. 구현·검증 범위는 [PROJECT_STATUS](PROJECT_STATUS.md)를 따른다. 실제 인증·운영 백업·AWS 완료를 뜻하지 않는다.
+
+저장소 접근 권한이 있는 팀원은 위 기준 커밋을 포함하는 main에서 담당 브랜치를 만들어 기존 실행·역할별 테스트 순서를 따른다. 미커밋 작업은 먼저 보존한다. Harness·Sandbox 구현과 역할 폴더는 이미 공유돼 있으며 환경 설정 후 사용할 수 있다. 실행한 기준 커밋은 `git rev-parse HEAD`, 검증 범위와 남은 작업은 [PROJECT_STATUS](PROJECT_STATUS.md)로 확인한다.
+
+**과거 공유 이력:** 2026-11-01에는 PR #10 병합 main `7d2db577` 위 `codex/ab-domain-graph`에서 공통 그래프 후속 통합을 검토했다. 2026-10-27에는 main `7c5e2d9`에 PR #1~#3이 병합돼 있었고, `codex/harness-security-eval`은 Harness·계약·Sandbox 보완의 리뷰 브랜치였다. 2026-10-29 확인 기준은 main `ca7c391`이었다. 당시의 공유 대기·기준 커밋 안내는 위 현재 상태와 구분한다.
+
+## 개발 기준
+
+| 읽을 자료 | 용도 |
+| --- | --- |
+| [PROJECT_STATUS.md](PROJECT_STATUS.md) | 현재 완료 근거, 제한, 동료가 시작할 범위, 다음 행동 |
+| [docs/SERVICE_SPEC.md](docs/SERVICE_SPEC.md) | PRD·CQ·실제/가상 경계·확정한 O01~O08 |
+| [docs/TOOLS.md](docs/TOOLS.md) | 호출 계약, 그래프 구조, 오류·승인·상태·통합 접점 |
+| [docs/AGENT_RUNTIME.md](docs/AGENT_RUNTIME.md) | 서비스 Agent의 역할 지침과 권한 경계 |
+| [AGENTS.md](AGENTS.md) | 저장소를 변경하는 개발용 지침 |
+| [data/sources/manifest.json](data/sources/manifest.json) | 고정 커밋·정확한 URL·수집 시각·해시·원본 검증 기록 |
+| [docs/reference](docs/reference) | 사용자 제공 v2 문서 원문 보존 |
+
+## 자료 사용과 한계
+
+OLIMEX ESP32-POE 공식 저장소 커밋 `deb38a377d50eadb04ddc7118a17a5ae58b1ee53`의 원본을 보관한다. 하드웨어·BOM의 Apache-2.0 라이선스 및 공식 README의 자료별 라이선스 설명은 `data/sources/`에서 확인한다. 문서는 CC BY-SA 3.0이며 수정하지 않은 원본과 출처를 보존했다. 현재 제품 페이지는 수집 시점 스냅샷이며 그 사양을 과거 개정에 일괄 적용하지 않는다.
+
+ODS 시트명 오류는 대응 PDF 표제와 모듈 행으로 확인하고 경고로 보존했다. `NA`·`NS`·`Opened` 의미는 확정하지 않았으므로 L 11행, L1 12행은 실장 상태가 `unknown`이다. PDF 전체 148행을 각각 시각 대조한 것은 아니다. 부품의 개정 간 동일성·대체 호환성·설계 변경 이유를 추정하지 않는다.
+
+S1/S2 개발 웹과 네 역할의 제한된 업무 경로, 접수 후보의 AI 초안 저장·의미 검색을 연결했다. 전체 Agent의 범용 추출/대화 품질·운영 사용자 인증·실제 운영 승인은 미완료다. 파일·Python 객체에 접근할 수 있는 로컬 개발자를 보안적으로 격리하는 시스템도 아니다.
