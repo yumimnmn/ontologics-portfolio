@@ -1,0 +1,507 @@
+"""Local FastAPI host. Development identity is explicit and loopback only."""
+
+from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path
+import re
+from urllib.parse import quote, urlsplit
+from uuid import uuid4
+
+from fastapi import FastAPI, Request
+from fastapi.concurrency import run_in_threadpool
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse, Response
+from pydantic import Field
+import psycopg
+
+from dev.preview_server import CSP, REPO_ROOT, STATIC_FILES, PreviewServer, PreviewUnavailable
+from service.contracts import Contract, CreateDocument, DocumentAction, ReviseDocument
+from service.bom import BomService
+from service.bom_contracts import BomCompare, BomCreate, BomRevise, BomReview, BomReviewFocus, BomReviewerOutcome
+from service.bom_runner import BomRunner
+from service.domain import DomainService
+from service.errors import ServiceError
+from service.gateway import EvidenceRef, ExecutionBudget, ToolContext, ToolGateway, ToolOutput, ToolSpec
+from service.identity import IdentityService, csrf_for_token
+from service.ledger import LedgerReader
+from service.ontology import OntologyCatalog
+from service.projections import ProjectionError
+from service.views import answer_query, ontology_view, snapshot_view
+from service.agent_api import mount_agent_api
+
+
+MAX_REQUEST_BYTES = 128 * 1024
+MAX_BOM_REVISION_BYTES = 2 * 1024 * 1024
+
+
+class SelectIdentity(Contract):
+    profile_id: str = Field(min_length=1, max_length=100)
+
+
+class Query(Contract):
+    question: str = Field(min_length=1, max_length=2000)
+    ledger_version: int = Field(ge=1)
+    context_entity_id: str | None = Field(default=None, min_length=1, max_length=250)
+
+
+class Snapshot(Contract):
+    ledger_version: int = Field(ge=1)
+
+
+def create_app(db, *, private_root: str, origin="http://127.0.0.1:8870", dev_mode=False,
+               reference_preview=False, catalog=None,projector=None,bom_runner=None,agent_settings=None,
+               agent_receipt_path=None, retrieval_embedding=None, model_budget_db=None, retrieval_reranker=None):
+    parsed=urlsplit(origin)
+    if parsed.scheme != "http" or parsed.hostname not in {"localhost","127.0.0.1"} or parsed.username or parsed.password or not parsed.port or parsed.path or parsed.query or parsed.fragment:
+        raise ServiceError("LOCAL_ORIGIN_REQUIRED",503)
+    identity=IdentityService(db,enabled=dev_mode)
+    ledger=LedgerReader(db,identity)
+    domain=DomainService(db,identity)
+    bom=BomService(db,identity,private_root,bom_runner or BomRunner())
+    catalog=catalog or OntologyCatalog.from_private_root(private_root)
+    ontology=ontology_view(catalog)
+    @asynccontextmanager
+    async def lifespan(application):
+        try:
+            yield
+        finally:
+            observer = getattr(application.state, "agent_observer", None)
+            if observer is not None:
+                try:
+                    # The exporter has its own bounded flush. Keep network work
+                    # off the event loop and telemetry failure out of shutdown.
+                    await run_in_threadpool(observer.close)
+                except Exception:
+                    pass
+
+    app=FastAPI(title="Ontologics local MK-S2 service",docs_url=None,redoc_url=None,openapi_url=None,
+                lifespan=lifespan)
+    app.state.identity,app.state.ledger,app.state.domain=identity,ledger,domain
+    app.state.bom=bom
+    app.state.catalog=catalog
+
+    def error_response(code,status):
+        return JSONResponse({"error":{"code":code}},status_code=status)
+
+    @app.middleware("http")
+    async def local_boundary(request,call_next):
+        host=request.headers.getlist("host")
+        origins=request.headers.getlist("origin")
+        # Row review submits all source-row decisions together. Its bounded
+        # allowance must not increase unrelated write endpoints' limits.
+        body_limit = (MAX_BOM_REVISION_BYTES
+                      if request.method == "POST" and re.fullmatch(
+                          r"/api/mks2/bom/documents/[^/]+/revise", request.url.path)
+                      else MAX_REQUEST_BYTES)
+        lengths = request.headers.getlist("content-length")
+        declared_size = (int(lengths[0]) if len(lengths) == 1
+                         and re.fullmatch(r"[0-9]{1,10}", lengths[0]) else None)
+        if host != [parsed.netloc] or len(origins)>1 or (origins and origins[0]!=origin) or request.headers.get("sec-fetch-site") in {"cross-site","same-site"}:
+            response=error_response("LOCAL_ORIGIN_REQUIRED",403)
+        elif request.method not in {"GET","POST","PATCH","DELETE"}:
+            response=error_response("METHOD_NOT_ALLOWED",405)
+        elif request.method != "GET" and (origins != [origin] or request.headers.get("x-requested-with")!="MK-S2" or request.headers.get("content-type","").split(";")[0]!="application/json"):
+            response=error_response("SAME_ORIGIN_JSON_REQUIRED",403)
+        elif request.method != "GET" and (declared_size is None or declared_size > body_limit):
+            response=error_response("REQUEST_SIZE_REJECTED",413)
+        else:
+            try:
+                if request.method != "GET":
+                    chunks=[];size=0
+                    async for chunk in request.stream():
+                        size+=len(chunk)
+                        if size > body_limit:
+                            raise ServiceError("REQUEST_SIZE_REJECTED",413)
+                        chunks.append(chunk)
+                    if size != declared_size:
+                        raise ServiceError("REQUEST_SIZE_REJECTED",413)
+                    request._body=b"".join(chunks)
+                response=await call_next(request)
+            except ServiceError as error:
+                response=error_response(error.code,error.status_code)
+            except psycopg.Error:
+                response=error_response("DATABASE_UNAVAILABLE",503)
+            except Exception:
+                # Never serialize SQL, source parser errors, request bodies or DSNs.
+                response=error_response("SERVICE_UNAVAILABLE",503)
+        response.headers.update({"Cache-Control":"no-store","Content-Security-Policy":CSP,
+                                 "X-Content-Type-Options":"nosniff","X-Frame-Options":"SAMEORIGIN","Referrer-Policy":"no-referrer"})
+        return response
+
+    @app.exception_handler(ServiceError)
+    async def safe_service_error(request,error):
+        return error_response(error.code,error.status_code)
+
+    @app.exception_handler(RequestValidationError)
+    async def safe_validation_error(request,error):
+        return error_response("INVALID_REQUEST",422)
+
+    def token(request):
+        return request.cookies.get("onto_session","")
+
+    def principal(request,*,write=False):
+        if write:
+            return identity.validate_write(token(request),request.headers.get("x-csrf-token"),request.headers.get("x-identity-revision"))
+        actor=identity.authenticate(token(request))
+        expected=request.headers.get("x-identity-revision")
+        if expected and expected!=actor.identity_revision:
+            raise ServiceError("IDENTITY_CHANGED",409)
+        return actor
+
+    def context(actor,payload):
+        meta=payload["metadata"]
+        projection=payload.get("projection") or {}
+        return ToolContext(execution_id=str(uuid4()),request_id=str(uuid4()),context_revision=actor.identity_revision,
+                           company_id=actor.company_id,read_snapshot_id=meta["snapshot_id"],ledger_version=meta["server_ledger_version"],
+                           projection_version=projection.get("projection_version"),ontology_version=catalog.version,
+                           rule_version=meta["rule_version"],as_of=datetime.fromisoformat(meta["effective_at"]),known_as_of=datetime.fromisoformat(meta["known_as_of"]))
+
+    gateway=ToolGateway(identity.authorize)
+
+    def verified_payload(actor,version):
+        payload=ledger.read(actor,version=version)
+        projection=payload.get("projection")
+        if not projection or projection.get("state")!="READY":
+            raise ServiceError("PROJECTION_NOT_READY",409)
+        if projector is None:
+            raise ServiceError("PROJECTION_READ_UNAVAILABLE",503)
+        try:
+            graph=projector.read_projection(projection)
+        except ProjectionError:
+            raise ServiceError("PROJECTION_READ_UNAVAILABLE",503) from None
+        payload["projection"]["graph"]=graph
+        return payload
+
+    def snapshot_handler(actor,args,ctx):
+        payload=verified_payload(actor,args.ledger_version)
+        if payload["metadata"]["snapshot_id"] != ctx.read_snapshot_id:
+            raise ServiceError("SNAPSHOT_MISMATCH")
+        view=snapshot_view(payload)
+        view["meta"]["identity_revision"]=actor.identity_revision
+        view["capabilities"].update({"product_review": "READ_ONLY", "retrieval": "LOCAL_HYBRID" if retrieval_embedding else "LOCAL_LEXICAL",
+            "purchase_write": "INTERNAL_DEVELOPMENT_ONLY", "bom_upload": "CHECK_RUNNER_ON_UPLOAD",
+            "agent": "ENABLED" if workflow else "DISABLED", "model": model_summary()["mode"]})
+        return ToolOutput(data=view,snapshot=ctx,evidence_refs=[EvidenceRef(evidence_id=ctx.read_snapshot_id,source_version=str(ctx.ledger_version),content_hash=payload["metadata"]["source_sha256"])])
+
+    def query_handler(actor,args,ctx):
+        payload=verified_payload(actor,args.ledger_version)
+        if payload["metadata"]["current_ledger_version"]!=args.ledger_version or payload["metadata"]["snapshot_id"]!=ctx.read_snapshot_id:
+            raise ServiceError("SNAPSHOT_CHANGED")
+        view=snapshot_view(payload)
+        view["meta"]["identity_revision"]=actor.identity_revision
+        if view["meta"]["projection_state"]!="READY":
+            raise ServiceError("PROJECTION_NOT_READY")
+        result=answer_query(args.question,view,ontology,context_entity_id=args.context_entity_id)
+        result["execution_id"]=ctx.execution_id
+        return ToolOutput(data=result,snapshot=ctx,evidence_refs=[EvidenceRef(evidence_id=ctx.read_snapshot_id,source_version=str(ctx.ledger_version),content_hash=payload["metadata"]["source_sha256"])])
+
+    gateway.register(ToolSpec("ledger.snapshot","ledger.read",False,Snapshot,snapshot_handler))
+    gateway.register(ToolSpec("ledger.query","query.read",False,Query,query_handler))
+
+    class BomRevisionCall(BomRevise):
+        bom_id: str = Field(min_length=1, max_length=100)
+
+    class BomReviewCall(BomReview):
+        bom_id: str = Field(min_length=1, max_length=100)
+
+    class BomActionCall(DocumentAction):
+        bom_id: str = Field(min_length=1, max_length=100)
+
+    class BomOutcomeCall(BomReviewerOutcome):
+        bom_id: str = Field(min_length=1, max_length=100)
+
+    def bom_handler(action, model):
+        def execute(actor,args,ctx):
+            values=args.model_dump()
+            identifier=values.pop("bom_id",None)
+            body=model.model_validate(values)
+            method=getattr(bom,action)
+            result=method(actor,actor.company_id,body) if action=="create" else method(actor,actor.company_id,identifier,body)
+            return ToolOutput(data=result,snapshot=ctx,evidence_refs=[])
+        return execute
+
+    for action,model,input_model,permission in (
+        ("create",BomCreate,BomCreate,"document.create"),
+        ("revise",BomRevise,BomRevisionCall,"document.update"),
+        ("review",BomReview,BomReviewCall,"document.review"),
+        ("approve",DocumentAction,BomActionCall,"document.approve"),
+        ("post",DocumentAction,BomActionCall,"document.post"),
+        ("request_changes",BomReviewerOutcome,BomOutcomeCall,"document.review"),
+        ("reject",BomReviewerOutcome,BomOutcomeCall,"document.review"),
+    ):
+        gateway.register(ToolSpec("bom."+action,permission,True,input_model,bom_handler(action,model)))
+
+    def compare_bom_handler(actor, args, ctx):
+        result = bom.compare(actor, actor.company_id, args)
+        refs = [EvidenceRef(evidence_id=ref["document_id"], source_version=str(ref["version"]),
+                            content_hash=ref["payload_hash"])
+                for ref in (result["left"], result["right"]) if ref is not None]
+        return ToolOutput(status="needs_review" if result["status"] == "NEEDS_REVIEW" else "completed",
+                          data=result, snapshot=ctx, evidence_refs=refs)
+
+    gateway.register(ToolSpec("bom.compare", "document.read", False, BomCompare, compare_bom_handler))
+
+    def review_focus_handler(actor, args, ctx):
+        result = bom.review_focus(actor, actor.company_id, args)
+        refs = [EvidenceRef(evidence_id=ref["document_id"], source_version=str(ref["version"]),
+                            content_hash=ref["payload_hash"])
+                for ref in (result["document"], result["reference"]) if ref is not None]
+        return ToolOutput(status="needs_review" if result["status"] == "NEEDS_REVIEW" else "completed",
+                          data=result, snapshot=ctx, evidence_refs=refs)
+
+    gateway.register(ToolSpec("bom.review_focus", "document.read", False, BomReviewFocus, review_focus_handler))
+    app.state.gateway=gateway
+
+    from service.material_api import mount_material_api
+    mount_material_api(app, identity=identity, ledger=ledger, bom=bom, gateway=gateway, principal=principal,
+                       context=context, verified_payload=verified_payload, embedding=retrieval_embedding,
+                       reranker=retrieval_reranker)
+    from service.procurement_api import mount_procurement_api
+    mount_procurement_api(app, db=db, identity=identity, ledger=ledger, gateway=gateway,
+                         principal=principal, context=context, verified_payload=verified_payload)
+    from service.reservations import ReservationCreate, ReservationService
+    reservations=ReservationService(db,identity)
+    app.state.reservations=reservations
+    from service import demo_cue
+    app.state.demo_cue=demo_cue.DemoReservationCue(db,identity,reservations) if demo_cue.enabled(dev_mode) else None
+
+    @app.get("/api/mks2/inventory/reservations")
+    def list_reservations(request:Request):
+        actor=principal(request)
+        return {"reservations":reservations.list(actor,actor.company_id),"company_id":actor.company_id,
+                "identity_revision":actor.identity_revision}
+
+    @app.post("/api/mks2/inventory/reservations")
+    def create_reservation(request:Request,body:ReservationCreate):
+        # Explicit command of another demand's planner. It records a ledger
+        # event only; projection and UI refresh follow the committed event.
+        actor=principal(request,write=True)
+        return reservations.reserve(actor,actor.company_id,body)
+
+    workflow, observer = None, None
+    def model_summary(execution_id=None):
+        return {"mode": "disabled", "live_calls": 0, "fake_calls": 0}
+    if agent_settings is not None and agent_settings.mode != "disabled":
+        from service.agent_host import build_agent_host
+
+        def agent_context(actor, execution_id):
+            payload = ledger.read(actor)
+            ctx = context(actor, payload)
+            verified_payload(actor, ctx.ledger_version)
+            return ctx.model_copy(update={"execution_id": execution_id})
+
+        workflow, model_summary, observer = build_agent_host(db, identity, gateway, agent_context,
+            agent_settings, receipt_path=agent_receipt_path, budget_db=model_budget_db,
+            retrieval_profile="R4" if retrieval_reranker is not None else "R3")
+    app.state.agent_workflow, app.state.agent_observer = workflow, observer
+    def delivery_answered(actor, answer):
+        if app.state.demo_cue is not None and "delivery" in (answer.get("intent") or []):
+            app.state.demo_cue.delivery_answered(actor.company_id)
+        # An agent-saved purchase-request draft is the same demo cue as the UI draft.
+        if app.state.demo_cue is not None and any(row.get("kind") == "PR" for row in answer.get("document_writes") or []):
+            app.state.demo_cue.purchase_request_drafted(actor.company_id)
+    mount_agent_api(app, principal, workflow, model_summary, on_answer=delivery_answered)
+
+    @app.get("/health")
+    def health():
+        model = model_summary()
+        return {"status":"ok","mode":"local-development","database":db.health(),"serviceConnected":True,
+                "model_calls":model["live_calls"], "agent":model,
+                "observability":{"exported":observer.exported,"failed":observer.failed,"invalid":observer.invalid,
+                                 "langsmith":observer.langsmith_status()}
+                if observer else {"enabled":False}}
+
+    @app.get("/api/mks2/session")
+    def get_session(request:Request):
+        profiles=[{"id":row["dev_profile_id"],"label":row["label"],"company_id":row["tenant_id"]} for row in identity.list_accounts()]
+        try:
+            actor=principal(request)
+        except ServiceError as error:
+            if error.status_code not in {401,403,409}: raise
+            return {"authenticated":False,"profiles":profiles,"principal":None,"csrf_token":None}
+        # Profile labels/IDs are presentation. Authority comes from the session.
+        with db.connect() as conn:
+            record=conn.execute("SELECT dev_profile_id FROM identity_accounts WHERE actor_id=%s",(actor.actor_id,)).fetchone()
+        return {"authenticated":True,"profiles":profiles,"principal":actor.public(),"profile_id":record["dev_profile_id"],"csrf_token":csrf_for_token(token(request))}
+
+    @app.post("/api/mks2/session")
+    def select_session(request:Request,body:SelectIdentity):
+        existing=token(request)
+        live=False
+        if existing:
+            try:
+                identity.authenticate(existing);live=True
+            except ServiceError as error:
+                if error.code not in {"IDENTITY_REQUIRED","IDENTITY_CHANGED","IDENTITY_INACTIVE"}:raise
+        credentials=identity.switch(existing,body.profile_id,request.headers.get("x-csrf-token"),request.headers.get("x-identity-revision")) if live else identity.login(body.profile_id)
+        response=JSONResponse({"authenticated":True,"principal":credentials.principal.public(),"profile_id":body.profile_id,"csrf_token":credentials.csrf_token})
+        response.set_cookie("onto_session",credentials.token,httponly=True,samesite="strict",path="/",max_age=identity.session_ttl_seconds)
+        return response
+
+    @app.delete("/api/mks2/session")
+    def end_session(request:Request):
+        identity.logout(token(request),request.headers.get("x-csrf-token"),request.headers.get("x-identity-revision"))
+        response=JSONResponse({"authenticated":False,"principal":None,"csrf_token":None})
+        response.delete_cookie("onto_session",path="/",httponly=True,samesite="strict")
+        return response
+
+    @app.get("/api/mks2/snapshot")
+    def get_snapshot(request:Request):
+        actor=principal(request);payload=ledger.read(actor);ctx=context(actor,payload)
+        return gateway.execute("ledger.snapshot",{"ledger_version":ctx.ledger_version},principal=actor,context=ctx,budget=ExecutionBudget(ctx.execution_id)).data
+
+    @app.get("/api/mks2/ontology")
+    def get_ontology(request:Request):
+        actor=principal(request);identity.authorize(actor,actor.company_id,"ontology.read")
+        return {**ontology,"meta":{**ontology["meta"],"identity_revision":actor.identity_revision,"company_id":actor.company_id}}
+
+    reasoning_cache={}
+    @app.get("/api/mks2/reasoning")
+    def get_reasoning(request:Request):
+        """OWL RL check of the current snapshot. Read-only: never re-projects or writes."""
+        actor=principal(request);payload=ledger.read(actor)
+        meta=payload["metadata"];version=meta["server_ledger_version"];stored=(payload.get("projection") or {}).get("reasoning")
+        base={"ledger_version":version,"ontology_version":(payload.get("projection") or {}).get("ontology_version"),
+              "identity_revision":actor.identity_revision,"company_id":actor.company_id}
+        if isinstance(stored,dict):
+            return {**stored,**base,"source":"projection"}
+        if projector is None:
+            return {"state":"NOT_RUN","code":"PROJECTOR_NOT_CONFIGURED",**base}
+        key=(actor.company_id,meta.get("run_id") or "INITIAL",version)
+        if key not in reasoning_cache:
+            if len(reasoning_cache)>=8:reasoning_cache.pop(next(iter(reasoning_cache)))
+            try:reasoning_cache[key]=projector.reason(payload,version,actor.company_id,key[1])
+            except Exception:reasoning_cache[key]={"state":"ERROR","code":"REASONING_FAILED","blocks_ready":False}
+        return {**reasoning_cache[key],**base,"source":"on_demand"}
+
+    @app.post("/api/mks2/query")
+    def query(request:Request,body:Query):
+        actor=principal(request,write=True);payload=ledger.read(actor);ctx=context(actor,payload)
+        result=gateway.execute("ledger.query",body.model_dump(),principal=actor,context=ctx,budget=ExecutionBudget(ctx.execution_id,max_tool_calls=1))
+        if app.state.demo_cue is not None and "delivery" in (result.data.get("intent") or []):
+            app.state.demo_cue.delivery_answered(actor.company_id)
+        return {**result.data,"execution_id":ctx.execution_id,"tool_name":result.tool_name,"tool_version":result.tool_version}
+
+    @app.get("/api/mks2/events")
+    def events(request:Request,after:int=0):
+        if after<0:raise ServiceError("INVALID_CURSOR",422)
+        actor=principal(request);payload=ledger.read(actor)
+        return {"current_ledger_version":payload["metadata"]["current_ledger_version"],"snapshot_ledger_version":payload["metadata"]["server_ledger_version"],"projection_state":(payload.get("projection") or {}).get("state","PENDING"),"events":ledger.events(actor,after),"identity_revision":actor.identity_revision,"company_id":actor.company_id}
+
+    @app.get("/api/mks2/documents")
+    def list_documents(request:Request):
+        actor=principal(request)
+        return {"documents":domain.list(actor,actor.company_id)}
+
+    @app.post("/api/mks2/documents")
+    def create_document(request:Request,body:CreateDocument):
+        actor=principal(request,write=True)
+        return domain.create(actor,actor.company_id,body.content,body.idempotency_key)
+
+    @app.get("/api/mks2/documents/{document_id}")
+    def get_document(request:Request,document_id:str):
+        actor=principal(request)
+        return domain.get(actor,actor.company_id,document_id)
+
+    @app.post("/api/mks2/documents/{document_id}/revise")
+    def revise_document(request:Request,document_id:str,body:ReviseDocument):
+        actor=principal(request,write=True)
+        return domain.revise(actor,actor.company_id,document_id,body.expected_version,body.payload_hash,body.content,body.idempotency_key)
+
+    @app.post("/api/mks2/documents/{document_id}/{action}")
+    def document_action(request:Request,document_id:str,action:str,body:DocumentAction):
+        if action not in {"review","approve","post"}:raise ServiceError("ACTION_NOT_ALLOWED",404)
+        actor=principal(request,write=True)
+        return getattr(domain,action)(actor,actor.company_id,document_id,body.expected_version,body.payload_hash,body.idempotency_key)
+
+    @app.get("/api/mks2/operations/{operation_id}")
+    def get_operation(request:Request,operation_id:str):
+        actor=principal(request)
+        return domain.operation(actor,actor.company_id,operation_id)
+
+    @app.get("/api/mks2/bom/sources")
+    def bom_sources(request:Request):
+        return bom.sources(principal(request))
+
+    @app.get("/api/mks2/bom/documents")
+    def bom_documents(request:Request):
+        actor=principal(request)
+        return {"documents":bom.list(actor,actor.company_id)}
+
+    def execute_bom(request,action,body,bom_id=None):
+        actor=principal(request,write=True)
+        payload=ledger.read(actor)
+        ctx=context(actor,payload)
+        args=body.model_dump()
+        if bom_id is not None:args["bom_id"]=bom_id
+        return gateway.execute("bom."+action,args,principal=actor,context=ctx,
+                               budget=ExecutionBudget(ctx.execution_id,max_tool_calls=1)).data
+
+    @app.post("/api/mks2/bom/documents")
+    def create_bom(request:Request,body:BomCreate):
+        return execute_bom(request,"create",body)
+
+    @app.post("/api/mks2/bom/compare")
+    def compare_bom(request:Request,body:BomCompare):
+        return execute_bom(request,"compare",body)
+
+    @app.post("/api/mks2/bom/review-focus")
+    def bom_review_focus(request:Request,body:BomReviewFocus):
+        return execute_bom(request,"review_focus",body)
+
+    @app.get("/api/mks2/bom/documents/{bom_id}")
+    def get_bom(request:Request,bom_id:str):
+        actor=principal(request)
+        return bom.get(actor,actor.company_id,bom_id)
+
+    @app.get("/api/mks2/bom/documents/{bom_id}/source")
+    def get_bom_source(request:Request,bom_id:str):
+        actor=principal(request)
+        filename,data=bom.source_bytes(actor,actor.company_id,bom_id)
+        return Response(data,media_type="application/octet-stream",
+                        headers={"Content-Disposition":"attachment; filename*=UTF-8''"+quote(filename,safe="")})
+
+    @app.post("/api/mks2/bom/documents/{bom_id}/revise")
+    def revise_bom(request:Request,bom_id:str,body:BomRevise):
+        return execute_bom(request,"revise",body,bom_id)
+
+    @app.post("/api/mks2/bom/documents/{bom_id}/review")
+    def review_bom(request:Request,bom_id:str,body:BomReview):
+        return execute_bom(request,"review",body,bom_id)
+
+    @app.post("/api/mks2/bom/documents/{bom_id}/request-changes")
+    def request_bom_changes(request:Request,bom_id:str,body:BomReviewerOutcome):
+        return execute_bom(request,"request_changes",body,bom_id)
+
+    @app.post("/api/mks2/bom/documents/{bom_id}/reject")
+    def reject_bom(request:Request,bom_id:str,body:BomReviewerOutcome):
+        return execute_bom(request,"reject",body,bom_id)
+
+    @app.post("/api/mks2/bom/documents/{bom_id}/{action}")
+    def act_bom(request:Request,bom_id:str,action:str,body:DocumentAction):
+        if action not in {"approve","post"}:raise ServiceError("ACTION_NOT_ALLOWED",404)
+        return execute_bom(request,action,body,bom_id)
+
+    @app.get("/api/preview")
+    def preserved_preview():
+        # Reuse the existing fixed-file reader without opening a second socket.
+        reader=object.__new__(PreviewServer)
+        reader.reference_preview,reader.private_root,reader.repo_root=reference_preview,private_root,REPO_ROOT
+        try:
+            return {"mode":"reference-preview","serviceConnected":False,"bundle":reader.load_bundle()}
+        except PreviewUnavailable as error:
+            raise ServiceError(str(error),503) from None
+
+    @app.get("/{path:path}")
+    def static(request:Request,path:str):
+        raw=request.scope.get("raw_path",b"").decode("ascii","ignore")
+        if request.url.query or raw!="/"+path or "/"+path not in STATIC_FILES:
+            raise ServiceError("NOT_FOUND",404)
+        filename,mime=STATIC_FILES["/"+path]
+        root=(REPO_ROOT/"web").resolve()
+        candidate=root/filename
+        if candidate.is_symlink() or not candidate.resolve().is_relative_to(root) or not candidate.is_file():
+            raise ServiceError("NOT_FOUND",404)
+        return Response(candidate.read_bytes(),media_type=mime)
+
+    return app
