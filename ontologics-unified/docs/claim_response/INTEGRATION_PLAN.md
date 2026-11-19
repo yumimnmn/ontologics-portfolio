@@ -1,6 +1,6 @@
 # C 클레임·재생산 대응 → ontologics-chat 통합 계획
 
-- 상태: **NOT_STARTED** (계획 단계 · 구현 전 결정 필요)
+- 상태: **IN_PROGRESS** · S0 완료 (2026-11-19)
 - 작업 위치: `yumimnmn/ontologics-portfolio` · 브랜치 `feature/claim-integration` · 폴더 `ontologics-unified/`
 - 기준: `ontologics-unified/` = `Ontologics-2Zo/ontologics-chat` `4448b7a` 복사본. C 원본은 `Ontologics-2Zo/ontologics` `479a45d`의 `ontologics/claim_response/`
 - 원본 폴더 `ontologics-chat/`, `ontologics/`는 수정하지 않는다.
@@ -57,6 +57,19 @@ MK-S2 화면·LangGraph Agent·PostgreSQL 원장(chat)을 그대로 쓰면서, C
 ### 3-3. 범위
 - 1단계: 접수 → 추적 → 범위 → 봉쇄 요청서 (C 1차)
 - 2단계: 테스트 의뢰·결과 → 재생산 수량 → A 요청서 (C 2차) · 재생산 수요를 소요·부족 계산에 연결
+
+## 3-4. 결정 (2026-11-19, 윰)
+
+- **T-Box:** 비공개 v1.7 T-Box는 Git·첨부 어디에도 없어 확인 불가(Mac `PRIVATE_INPUT_ROOT`에만 있음). 팀원 확인 없이 진행한다. v1.7 파일은 건드리지 않고, 팀이 이미 승인·병합한 공통 T-Box 클레임 클래스(PR #6·#7: `ClaimIntake`, `TestRequest`, `QualityTestResult`, `ReproductionRequirement`)를 **별도 확장 파일** `ontology/tbox_claim_extension.ttl`로 둔다. chat 로더는 `tbox*.ttl`을 모두 읽으므로 v1.7과 함께 실릴 수 있다. 합칠 때 공통 담당자가 v1.7에 같은 클래스가 있으면 확장 파일을 지우고 매핑만 맞춘다.
+- **생산 라인:** ① 채택. 라인 필드를 추가하지 않고 생산 실적(`production_ref`)·LOT/IQC 단위로 범위를 잡는다. 라인은 `line_not_confirmed`로 표시.
+- **범위:** 2단계까지 (S0~S9 전체).
+
+## 3-5. S0 기준선 (복사본 그대로)
+
+| 검사 | 명령 | 결과 |
+|---|---|---|
+| Python | `PYTHONPATH=. TEST_DATABASE_URL=… uv run pytest -q` (로컬 PostgreSQL 16) | 530 통과 · 13 건너뜀 (Docker Runner·비공개 T-Box·Neo4j·로컬 모델 필요) |
+| JS | `node --test tests/*.mjs` | 248 통과 |
 
 ## 4. 단계별 작업 (각 단계 끝에 테스트 통과 후 커밋)
 
