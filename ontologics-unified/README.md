@@ -1,5 +1,9 @@
 # ontologics-chat 개발 인계
 
+> **ontologics-unified (이 폴더)** — 팀 `ontologics-chat`(4448b7a) 복사본에 C 클레임·재생산 대응을 합친 버전이다. 원본 `ontologics-chat/`·`ontologics/`는 그대로 둔다.
+> 추가된 것: 클레임 접수(메일·엑셀·CSV) → 보드 역추적(공급사까지) → 영향 범위 → 생산 중단·출고 보류 → 테스트 의뢰·결과 → 재생산 수량·A 요청서, 모두 기존 결재·원장·그래프 흐름 위에서 동작. 화면은 `클레임 대응` 탭, 질문은 `claim.trace` 도구.
+> 계획·결정·검증 기록: [docs/claim_response/INTEGRATION_PLAN.md](docs/claim_response/INTEGRATION_PLAN.md) · 확장 온톨로지: `ontology/extensions/` · 합성 샘플: `data/claim_response/claims/`
+
 > 코드 검토·평가는 [검토 안내](docs/REVIEW_GUIDE.md)부터 보세요. 무엇을 만들었는지, 어디부터 보면 되는지, 테스트 실행 방법과 한계를 정리했습니다.
 
 MK-S2의 화면·핵심 동선을 유지하면서 제조 업무를 실제 서버 원장·온톨로지·Agent에 연결하기 위한 개발 기준이다. 공식 설계 v1.7과 시연 데이터 v1.3은 서로 다른 버전 축이다.

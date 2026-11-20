@@ -1,6 +1,6 @@
 # C 클레임·재생산 대응 → ontologics-chat 통합 계획
 
-- 상태: **IN_PROGRESS** · S0·S1·S2·S6 완료 (2026-11-20)
+- 상태: **IMPLEMENTED_UNVERIFIED (실제 v1.7 T-Box·Neo4j·실제 모델 미실행)** · S0~S9 완료 (2026-11-20) · 합성 데이터 기준 전체 회귀 통과
 - 작업 위치: `yumimnmn/ontologics-portfolio` · 브랜치 `feature/claim-integration` · 폴더 `ontologics-unified/`
 - 기준: `ontologics-unified/` = `Ontologics-2Zo/ontologics-chat` `4448b7a` 복사본. C 원본은 `Ontologics-2Zo/ontologics` `479a45d`의 `ontologics/claim_response/`
 - 원본 폴더 `ontologics-chat/`, `ontologics/`는 수정하지 않는다.
@@ -117,6 +117,53 @@ chat의 업무 문서 경로(`procurement_documents` · 작성 → 다른 계정
   - 공식 스키마에 같은 클래스가 있으면 확장 미적용
 - 검증: 전체 Python 557 통과(13 건너뜀) · JS 248 통과.
 - 한계: 실제 비공개 v1.7 T-Box·Neo4j로는 실행하지 않았다(NOT_RUN). 화면 그래프의 클레임 노드 색·범례는 S8.
+
+## 3-10. S3~S5 결과 — 역추적·봉쇄·테스트·재생산
+
+- `service/claim_trace.py`(순수 함수, 원장 스냅샷만 읽음)
+  - 역추적: 보드 → 생산 실적 → 수입검사 → 입하 → 발주 → 구매 요청 → 견적(공급사). C보다 한 단계 더 깊다(공급사까지).
+  - 기초 LOT으로 만든 보드는 공급사 기록이 없으므로 `NOT_RECORDED_OPENING_LOT`로 남긴다.
+  - 영향 범위: 같은 생산 실적 또는 같은 LOT의 보드, 상태별(생산 완료·창고·운송·도착). 생산 라인은 원장에 없어 `LINE_NOT_RECORDED`(결정 ①).
+  - 보류 후보 = 생산 완료·창고, 납품 후보 = 운송·도착. 일련번호 없는 기초 보드는 범위 안팎을 판단하지 않는다.
+- 결재 문서 4종 추가(기존 작성 → 검토 → 승인 → 전기 흐름 재사용, 자기승인 금지 그대로):
+  - `CONTAINMENT` 생산 중단·출고 보류: 범위 밖 보드 거부(`CONTAINMENT_OUTSIDE_SCOPE`), 같은 종류 1회.
+  - `TEST_REQUEST` 테스트 의뢰: 신고·범위 보드만.
+  - `TEST_RESULT` 테스트 결과: 의뢰 보드만, 보드별 결과·처리(고객 교체/재고 교체/조치 없음/판단 보류), 1회.
+  - `REPRODUCTION` 재생산·A 요청서: 서버가 결과로 계산한 수량과 같아야 함(`REPRODUCTION_QUANTITY_CHANGED`), 판단 불가면 거부.
+- 재생산 수량 규칙(C 6-3): 고객 교체 + 재고 교체. 결과 미정 보드가 있으면 "최소 N대", 수요 없이 미정만 있으면 "판단 불가". 창고 보드는 납품 회차에 약속돼 있어 여유 재고로 빼지 않는다(`WAREHOUSE_BOARDS_PROMISED_TO_ROUND_NOT_SUBTRACTED`) — C의 임시 운영 기록과 다른 점.
+- 모든 요청서는 `transmission_status = NOT_SENT`. 보드 상태·재고·회차 수량은 바꾸지 않는다.
+- 확장 SHACL: 봉쇄·테스트 의뢰 → 클레임 접수, 테스트 결과 → 테스트 의뢰, 재생산 → 테스트 결과 연결 검사.
+- 테스트 `tests/test_claim_workflow.py` 6개: 역추적·공급사·범위 / 봉쇄 범위·1회 / 재생산 최소 수량·A 요청서·답변 / 판단 불가·결과 중복 / 전체 사슬 그래프 CONFORMS / 질문 인식.
+
+## 3-11. S7 결과 — 클레임 질문 에이전트
+
+- 읽기 전용 도구 `claim.trace`(Tool Gateway 등록, 권한 `query.read`, 변경 없음). 답변은 결정적 문장이며 숫자·일련번호는 모두 `claim_view()`에서 나온다(모델 호출 0, 원장 변경 0).
+- 워크플로 라우팅: 클레임 단어(클레임·재생산·출고보류·봉쇄·테스트 의뢰 등)가 있으면 모델 해석 전에 `claim_response` 능력으로 보낸다. 다른 질문 경로는 그대로.
+- 관측: `claim_response` 능력·`claim.trace` 도구 이름을 Langfuse/LangSmith 허용 목록에 추가(전송 범위는 그대로).
+- API: `GET /api/mks2/claims`(클레임 화면용 읽기), `POST /api/mks2/claims/query`(모델 없는 화면에서 같은 도구 실행), `POST /api/mks2/claims/convert`(저장소의 합성 샘플 3개만 변환, 경로 입력 거부).
+- 테스트 `tests/test_claim_agent.py` 4개(모델 없이 클레임 라우팅 / 다른 경로 불변 / 버전 불일치 오류 / 메일·엑셀·CSV가 같은 접수 초안), `tests/test_service_api.py`에 API 1개(읽기 전용·CSRF·샘플 제한).
+
+## 3-12. S8 결과 — 클레임 대응 탭
+
+- `web/mks2/claims.js` + `index.html` 탭 `클레임 대응`(`#claims`) + `styles.css` 클레임 구역. 보존 7파일은 그대로.
+- 화면 구성: ① 합성 샘플 변환 → 사람이 확인 후 접수 초안 저장 ② 결재 대기 문서(작성자는 승인 버튼 없음, 다른 계정이 검토·승인 → 원장 반영) ③ 클레임별 카드: 역추적 표·영향 범위·봉쇄·테스트·재생산.
+- 수량·일련번호는 화면에서 계산하지 않고 서버 값만 그린다. 서버 문자열은 모두 이스케이프.
+- 클레임 문서는 공급 흐름 카드(`procurement.js`)에서 제외하고 이 탭에서만 다룬다. 활동 로그용 한국어 이름만 추가.
+- 오른쪽 질의 패널 `클레임 질의`: 모델이 켜져 있으면 Agent 경로, 꺼져 있으면 `/api/mks2/claims/query`.
+- 정적 파일 허용 목록(`dev/preview_server.py`)에 `claims.js` 추가.
+- 테스트 `tests/test_claims_ui.mjs` 5개: 종류 목록 / 역추적·범위·이스케이프 / 작성자 승인 금지·정확 버전 검토→승인 / 출고 보류 = 서버 범위 보드·중복 비활성 / 재생산 = 서버 수량·판단 불가 시 버튼 없음.
+- 미구현: 디지털 트윈의 고객사 → 출하장 역추적 애니메이션, 그래프 클레임 노드 전용 색·범례(현재 기본 색).
+
+## 3-13. 최종 검증 (S9, 2026-11-20)
+
+| 항목 | 결과 |
+|---|---|
+| Python 전체 | 572 통과 · 13 건너뜀 (S0 기준 530 → +42, 기존 테스트 실패 0) |
+| JS 전체 | 253 통과 (기준 248 → +5) |
+| 클레임 전용 | intake 15 · documents 4 · projection 4 · workflow 6 · agent 4 · API 1 · UI 5 |
+| 실제 비공개 v1.7 T-Box · Neo4j | NOT_RUN (합성 기본 스키마 + 확장으로 검증) |
+| 실제 모델 | NOT_RUN (클레임 경로는 모델을 쓰지 않음) |
+| 화면 수동 확인 | NOT_RUN (서비스 실행에 비공개 입력 필요) |
 
 ## 4. 단계별 작업 (각 단계 끝에 테스트 통과 후 커밋)
 
