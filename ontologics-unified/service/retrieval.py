@@ -38,7 +38,11 @@ _HASH = re.compile(r"^[0-9a-f]{64}$")
 _BOM_NODES = {"SourceDocument", "SourceSnapshot", "SourceRow", "BOMSnapshot", "BOMLine",
               "BOMApplication", "DocumentVersion", "ApprovalGrant"}
 _PROCUREMENT_NODES = {"SupplierOffer", "PurchaseRequest", "PurchaseOrder", "PurchaseOrderLine",
-                      "PartsReceiptLine", "InspectionResult", "PartLot", "SourceDocument", "DocumentVersion", "ApprovalGrant", "Evidence"}
+                      "PartsReceiptLine", "InspectionResult", "PartLot", "SourceDocument", "DocumentVersion", "ApprovalGrant", "Evidence",
+                      # Every posted document kind must have its node here; a posted document whose
+                      # node type is missing made the whole corpus fail (DEC-H69 fix).
+                      "ProductionReport", "FinishedGoodsReceipt", "Shipment", "ArrivalRecord", "ScenarioRun",
+                      "ClaimIntake", "ContainmentRequest", "TestRequest", "QualityTestResult", "ReproductionRequirement"}
 _ROW_FIELDS = {"row_id", "ordinal", "source_ordinal", "source_row", "sheet", "locator", "cells",
                "designators", "source_quantity", "source_quantity_text", "source_description"}
 _DECISION_FIELDS = {"application_status", "quantity_per_unit", "unit", "item_id", "review_basis", "evidence_note"}

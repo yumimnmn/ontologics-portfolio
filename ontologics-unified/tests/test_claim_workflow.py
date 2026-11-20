@@ -115,6 +115,28 @@ class ClaimWorkflowTests(unittest.TestCase):
         predicates = {r["predicate"] for r in snapshot["relationships"]}
         self.assertTrue({"claimReportsBoard", "intake_id", "test_request_id", "test_result_ids"} <= predicates)
 
+    def test_evidence_search_indexes_every_posted_document_including_fulfillment_and_claims(self):
+        # A posted document whose node type the search index did not accept made the whole
+        # corpus fail (fulfillment documents already did before the claim integration).
+        from datetime import datetime, timezone
+        from service.gateway import ToolContext
+        from service.retrieval import _build_corpus
+        self.p.post(self.containment(["B-102"]))
+        request = self.request_test(["B-101"])
+        result = self.results(request, [("B-101", "fail", "customer_replacement")])
+        self.p.post(ReproductionContent(test_result_id=result["id"], reproduction_ref="REP-1", quantity=1, note="Reproduction request for A"))
+        snapshot = self.read()
+        now = datetime.now(timezone.utc)
+        context = ToolContext(execution_id="probe", request_id="probe", context_revision="probe", company_id=self.p.company,
+                              read_snapshot_id="probe", ledger_version=snapshot["metadata"]["server_ledger_version"],
+                              as_of=now, known_as_of=now)
+        corpus = _build_corpus(snapshot, context)
+        posted = {d["id"]: d["kind"] for d in snapshot["procurement"]["documents"] if d["status"] == "POSTED"}
+        indexed = {d["source"].get("document_id") for d in corpus.documents if d["kind"] == "development_document"}
+        self.assertEqual(set(posted), indexed)
+        self.assertTrue({"PRODUCTION", "SHIPMENT", "ARRIVAL", "CLAIM_INTAKE", "CONTAINMENT", "TEST_REQUEST", "TEST_RESULT",
+                         "REPRODUCTION"} <= set(posted.values()))
+
     def test_claim_questions_are_recognized(self):
         for question in ("CLM-TEST-1 클레임 영향 범위는?", "재생산 몇 대 해야 해?", "출고 보류 대상 알려줘"):
             self.assertTrue(is_claim_question(question))
