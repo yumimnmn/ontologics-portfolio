@@ -1,6 +1,6 @@
 # C 클레임·재생산 대응 → ontologics-chat 통합 계획
 
-- 상태: **IN_PROGRESS** · S0 완료 (2026-11-19)
+- 상태: **IN_PROGRESS** · S0·S1 완료 (2026-11-20)
 - 작업 위치: `yumimnmn/ontologics-portfolio` · 브랜치 `feature/claim-integration` · 폴더 `ontologics-unified/`
 - 기준: `ontologics-unified/` = `Ontologics-2Zo/ontologics-chat` `4448b7a` 복사본. C 원본은 `Ontologics-2Zo/ontologics` `479a45d`의 `ontologics/claim_response/`
 - 원본 폴더 `ontologics-chat/`, `ontologics/`는 수정하지 않는다.
@@ -70,6 +70,18 @@ MK-S2 화면·LangGraph Agent·PostgreSQL 원장(chat)을 그대로 쓰면서, C
 |---|---|---|
 | Python | `PYTHONPATH=. TEST_DATABASE_URL=… uv run pytest -q` (로컬 PostgreSQL 16) | 530 통과 · 13 건너뜀 (Docker Runner·비공개 T-Box·Neo4j·로컬 모델 필요) |
 | JS | `node --test tests/*.mjs` | 248 통과 |
+
+## 3-6. T-Box 없이 진행하는 방식 (2026-11-20)
+
+chat은 PostgreSQL 원장이 진실이고 RDF/Neo4j는 투영이다. 투영 payload에 T-Box에 없는 클래스가 하나라도 있으면 `UNMAPPED_CLASS` → `VIOLATIONS` → 해당 버전 전체가 NOT_READY가 된다(`service/projections.py`).
+그래서 T-Box를 확인하기 전에는 **클레임 사건을 원장·API·화면·Agent에만 두고 그래프 투영 payload에는 넣지 않는다.** 기존 그래프는 계속 READY다. T-Box(또는 확장 파일)가 정해지면 S6에서 투영을 켠다.
+
+## 3-7. S1 결과
+
+- `service/claim_intake.py`: C `intake.py`(Ontologics-2Zo/ontologics@479a45d) 이식. 팀 공통 모델의 `digest`·`instant`·`ROOT`만 같은 정의로 옮겼다.
+- `data/claim_response/claims/`: C 가상 클레임 샘플(메일·엑셀·CSV·기대 결과) 그대로.
+- `tests/test_claim_intake.py`: C `test_intake.py` 15개 이식. 팀 공통 `validate_graph` 대신 근거 연결(SourceDocument→Evidence→ClaimIntake)과 ClaimIntake 필드 계약을 검사.
+- 검증: 이식 테스트 15 통과 · 전체 Python 545 통과(13 건너뜀, 기준선과 같은 이유) · JS 248 통과.
 
 ## 4. 단계별 작업 (각 단계 끝에 테스트 통과 후 커밋)
 
