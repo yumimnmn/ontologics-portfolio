@@ -58,7 +58,7 @@ def create_app(db, *, private_root: str, origin="http://127.0.0.1:8870", dev_mod
     ledger=LedgerReader(db,identity)
     domain=DomainService(db,identity)
     bom=BomService(db,identity,private_root,bom_runner or BomRunner())
-    catalog=catalog or OntologyCatalog.from_private_root(private_root)
+    catalog=catalog or OntologyCatalog.from_private_root(private_root).with_extensions()
     ontology=ontology_view(catalog)
     @asynccontextmanager
     async def lifespan(application):

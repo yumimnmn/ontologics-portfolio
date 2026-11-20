@@ -70,7 +70,7 @@ def main():
         identity=IdentityService(db,enabled=args.dev_mode)
         if args.dev_mode:identity.provision_dev_accounts()
         ledger=LedgerReader(db,identity)
-        catalog=OntologyCatalog.from_private_root(Path(private_root))
+        catalog=OntologyCatalog.from_private_root(Path(private_root)).with_extensions()
         if args.import_initial:
             payload=load_initial(private_root,company_id="DEMO-A",run_id="INITIAL",profile_id="initial-baseline",imported_at=datetime.now(timezone.utc).isoformat())
             ledger.install_initial(payload,local_development=args.dev_mode)

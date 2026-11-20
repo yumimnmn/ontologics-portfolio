@@ -1,6 +1,6 @@
 # C 클레임·재생산 대응 → ontologics-chat 통합 계획
 
-- 상태: **IN_PROGRESS** · S0·S1·S2 완료 (2026-11-20)
+- 상태: **IN_PROGRESS** · S0·S1·S2·S6 완료 (2026-11-20)
 - 작업 위치: `yumimnmn/ontologics-portfolio` · 브랜치 `feature/claim-integration` · 폴더 `ontologics-unified/`
 - 기준: `ontologics-unified/` = `Ontologics-2Zo/ontologics-chat` `4448b7a` 복사본. C 원본은 `Ontologics-2Zo/ontologics` `479a45d`의 `ontologics/claim_response/`
 - 원본 폴더 `ontologics-chat/`, `ontologics/`는 수정하지 않는다.
@@ -103,6 +103,20 @@ chat의 업무 문서 경로(`procurement_documents` · 작성 → 다른 계정
 - 사건 목록 표시: `클레임 접수 기록`.
 - 테스트 `tests/test_claim_documents.py` 4개: 연결·미연결, 상태 불변, 자기검토 금지, 같은 클레임 번호 1회, 계약 검사.
 - 검증: 전체 Python 549 통과(13 건너뜀) · JS 248 통과.
+
+## 3-9. S6 결과 — 확장 T-Box·SHACL로 클레임 노드 투영
+
+- `ontology/extensions/tbox_claim.ttl`: 팀 공통 클레임 클래스 7개·관계 5개 그대로 + `claimReportsBoard`(클레임 → 원장 보드) + 데이터 속성 6개(`claim_ref`·`customer_name`·`reported_at`·`reported_symptom`·`claimed_qty`·`confirmed_failure`).
+- `ontology/extensions/shapes_claim.ttl`: 필수값, 신고 시각 오프셋 형식, 수량 ≥ 1, `confirmed_failure = false`(신고 ≠ 확인된 불량).
+- `OntologyCatalog.with_extensions()`: 확장 파일을 읽어 카탈로그에 합친다(소스 목록·`ontology_version`에 반영). 공식 T-Box에 같은 이름 클래스가 있으면 확장을 적용하지 않는다. `service/main.py`·`service/__main__.py`에서 사용.
+- 원장 반영: `CLAIM_INTAKE` 노드 타입을 `ClaimIntake`로 바꾸고, `LINKED` 일련번호마다 `claimReportsBoard` 관계를 만든다. `NOT_FOUND`는 관계 없이 속성에만 남는다.
+- 테스트 `tests/test_claim_projection.py` 4개(가상 v1.7 기본 스키마 = chat 스냅샷이 쓰는 클래스·관계만 선언):
+  - 확장 적용 시 CONFORMS · 미매핑 0 · 보드 2개 연결(모르는 번호 제외)
+  - 확장 없으면 `ClaimIntake` 미매핑 → NOT_READY (확장이 필요한 이유)
+  - 증상 누락 · 확인된 불량 표시 · 오프셋 없는 시각 · 수량 0 → SHACL VIOLATIONS
+  - 공식 스키마에 같은 클래스가 있으면 확장 미적용
+- 검증: 전체 Python 557 통과(13 건너뜀) · JS 248 통과.
+- 한계: 실제 비공개 v1.7 T-Box·Neo4j로는 실행하지 않았다(NOT_RUN). 화면 그래프의 클레임 노드 색·범례는 S8.
 
 ## 4. 단계별 작업 (각 단계 끝에 테스트 통과 후 커밋)
 

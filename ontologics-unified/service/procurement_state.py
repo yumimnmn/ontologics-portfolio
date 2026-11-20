@@ -282,9 +282,8 @@ def apply_procurement_event(previous, event):
              "RECEIPT": "PartsReceiptLine", "IQC": "InspectionResult", "CANCEL": "SourceDocument",
              "PRODUCTION": "ProductionReport", "FG_RECEIPT": "FinishedGoodsReceipt", "SHIPMENT": "Shipment", "ARRIVAL": "ArrivalRecord",
              "SCENARIO": "ScenarioRun", "SUBSTITUTION": "SourceDocument",
-             # Until the claim T-Box extension is projected (S6) the confirmed customer
-             # report is the source document it already is in the v1.7 schema.
-             "CLAIM_INTAKE": "SourceDocument",
+             # C claim response classes come from the claim T-Box extension (ontology/extensions).
+             "CLAIM_INTAKE": "ClaimIntake",
              "COHORT": {"FG_RECEIPT": "FinishedGoodsReceipt", "SHIPMENT": "Shipment", "ARRIVAL": "ArrivalRecord"}.get(content.get("stage"), "SourceDocument")}[kind]
     attributes = {"document_id": identifier, "kind": kind, "status": "POSTED", "quantity": getattr(typed, "quantity", 0),
                   "supplier_confirmation": False, "transmission_status": "NOT_SENT"}
@@ -337,6 +336,14 @@ def apply_procurement_event(previous, event):
         source = node("evidence", "Evidence", evidence, kind + " evidence")
         edge(node_id(parent["id"]), "supportedBy", source)
         edge(document_node, "supportedBy", source)
+    if kind == "CLAIM_INTAKE":
+        # Only ledger boards are linked; NOT_FOUND serials stay in the attributes for a person.
+        for unit in resolved["units"]:
+            if unit["match_state"] == "LINKED":
+                board = node_id(unit["production_id"], ["board", unit["serial"]])
+                if not any(x["id"] == board for x in snapshot["entities"]):
+                    raise ServiceError("CLAIM_EVENT_BOARD_MISSING", 409)
+                edge(document_node, "claimReportsBoard", board)
     if kind == "COHORT":
         # One LegacyCohort per round: the opening-balance boards without serials.
         cohort_id = "urn:ontologics:procurement:" + content_hash([meta["company_id"], meta["run_id"], resolved["round_id"], "legacy-cohort"])

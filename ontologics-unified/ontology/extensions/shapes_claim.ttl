@@ -1,0 +1,17 @@
+# C 클레임 확장 SHACL (ontologics-unified 전용)
+# 규칙은 C claim_response 코드(intake.py 필수값·수량·시간대, 신고 ≠ 확인된 불량)를 제약으로 옮긴 것이다.
+@prefix o: <urn:ontologics:> .
+@prefix sh: <http://www.w3.org/ns/shacl#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+o:ClaimIntakeShape a sh:NodeShape ;
+  sh:targetClass o:ClaimIntake ;
+  sh:property [ sh:path o:claim_ref ; sh:minCount 1 ; sh:maxCount 1 ; sh:minLength 1 ] ;
+  sh:property [ sh:path o:customer_name ; sh:minCount 1 ; sh:maxCount 1 ; sh:minLength 1 ] ;
+  sh:property [ sh:path o:reported_symptom ; sh:minCount 1 ; sh:maxCount 1 ; sh:minLength 1 ] ;
+  sh:property [ sh:path o:reported_at ; sh:minCount 1 ; sh:maxCount 1 ;
+                sh:pattern "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}(:\\d{2})?(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})$" ;
+                sh:message "신고 시각에는 날짜·시간·UTC 오프셋이 모두 있어야 합니다" ] ;
+  sh:property [ sh:path o:claimed_qty ; sh:minCount 1 ; sh:maxCount 1 ; sh:minInclusive 1 ] ;
+  sh:property [ sh:path o:confirmed_failure ; sh:minCount 1 ; sh:hasValue false ;
+                sh:message "고객 신고는 확인된 불량이 아닙니다" ] .

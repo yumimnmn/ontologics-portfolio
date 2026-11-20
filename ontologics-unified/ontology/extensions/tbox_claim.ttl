@@ -1,0 +1,35 @@
+# C 클레임·재생산 대응 확장 T-Box (ontologics-unified 전용)
+# 클래스와 관계(intake_id ~ test_result_ids)는 팀 공통 T-Box에서 그대로 옮겼다:
+#   Ontologics-2Zo/ontologics@479a45d ontology/tbox.ttl (PR #6·#7로 승인·병합)
+# claimReportsBoard 이하 관계와 데이터 속성은 chat 원장 노드에 잇기 위해 이 확장에서 추가했다.
+# 비공개 v1.7 T-Box에 같은 이름의 클래스가 있으면 이 확장은 쓰지 않는다(service/ontology.py).
+@prefix o: <urn:ontologics:> .
+@prefix owl: <http://www.w3.org/2002/07/owl#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd: <http://www.w3.org/2001/XMLSchema#> .
+
+o:ClaimExtension a owl:Ontology ; owl:versionInfo "claim-extension-1" .
+
+o:ClaimIntake a owl:Class ; rdfs:label "클레임 접수"@ko .
+o:QualityCase a owl:Class ; rdfs:label "품질 사건"@ko .
+o:QualityScope a owl:Class ; rdfs:label "영향 범위"@ko .
+o:ContainmentRequest a owl:Class ; rdfs:label "생산 중단·출고 보류 요청"@ko .
+o:TestRequest a owl:Class ; rdfs:label "테스트 의뢰"@ko .
+o:QualityTestResult a owl:Class ; rdfs:label "테스트 결과"@ko .
+o:ReproductionRequirement a owl:Class ; rdfs:label "재생산 수량"@ko .
+
+o:intake_id a owl:ObjectProperty ; rdfs:range o:ClaimIntake .
+o:case_id a owl:ObjectProperty ; rdfs:range o:QualityCase .
+o:scope_id a owl:ObjectProperty ; rdfs:range o:QualityScope .
+o:test_request_id a owl:ObjectProperty ; rdfs:range o:TestRequest .
+o:test_result_ids a owl:ObjectProperty ; rdfs:range o:QualityTestResult .
+
+# 클레임 → chat 원장의 보드(v1.7 BoardUnit). v1.7 네임스페이스를 모르므로 range는 두지 않는다.
+o:claimReportsBoard a owl:ObjectProperty ; rdfs:domain o:ClaimIntake ; rdfs:label "신고된 보드"@ko .
+
+o:claim_ref a owl:DatatypeProperty ; rdfs:domain o:ClaimIntake ; rdfs:range xsd:string .
+o:customer_name a owl:DatatypeProperty ; rdfs:domain o:ClaimIntake ; rdfs:range xsd:string .
+o:reported_at a owl:DatatypeProperty ; rdfs:domain o:ClaimIntake ; rdfs:range xsd:string .
+o:reported_symptom a owl:DatatypeProperty ; rdfs:domain o:ClaimIntake ; rdfs:range xsd:string .
+o:claimed_qty a owl:DatatypeProperty ; rdfs:domain o:ClaimIntake ; rdfs:range xsd:integer .
+o:confirmed_failure a owl:DatatypeProperty ; rdfs:domain o:ClaimIntake ; rdfs:range xsd:boolean .

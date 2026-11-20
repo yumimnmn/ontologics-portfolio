@@ -189,6 +189,36 @@ class OntologyCatalog:
             raise OntologyInputError("INVALID_MANIFEST") from None
         return cls.load(root, specs)
 
+    def with_extensions(self, directory: Path | str | None = None) -> "OntologyCatalog":
+        """Add repository-owned schema extensions (ontology/extensions) to this catalog.
+
+        ontologics-unified only: the claim extension copies the team's approved common
+        claim classes. If the base T-Box already declares a class with the same local
+        name the extension is not applied, so the official schema always wins.
+        """
+        directory = Path(directory) if directory else Path(__file__).resolve().parents[1] / "ontology" / "extensions"
+        files = sorted(directory.glob("*.ttl")) if directory.is_dir() else []
+        if not files:
+            return self
+        local = lambda term: re.split(r"[#/:]", str(term))[-1]
+        base_names = {local(c) for c in self._tbox.subjects(RDF.type, OWL.Class)} | {local(c) for c in self._tbox.subjects(RDF.type, RDFS.Class)}
+        tbox, shapes = Graph() + self._tbox, Graph() + self._shapes
+        sources, added = list(self._sources), []
+        for path in files:
+            data = _read_bounded(path, 1_000_000)
+            digest = sha256(data).hexdigest()
+            graph = Graph().parse(data=data, format="turtle", publicID="urn:ontologics:schema-extension:" + digest)
+            role = "tbox" if path.name.startswith("tbox") else "shapes" if path.name.startswith(("shapes", "shacl")) else None
+            if role is None:
+                raise OntologyInputError("INVALID_EXTENSION_NAME")
+            if role == "tbox" and {local(c) for c in graph.subjects(RDF.type, OWL.Class)} & base_names:
+                return self  # superseded by the official schema
+            added.append((role, graph, {"role": role, "version": "extension:" + path.stem, "sha256": digest, "bytes": len(data), "triples": len(graph)}))
+        for role, graph, source in added:
+            (tbox if role == "tbox" else shapes).__iadd__(graph)
+            sources.append(source)
+        return type(self)(tbox, shapes, deepcopy(self._adapters), sources)
+
     def tbox_graph(self) -> Graph:
         """Independent full graph for runtime querying; mutation cannot prune us."""
         return Graph() + self._tbox
