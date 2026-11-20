@@ -51,7 +51,7 @@ def apply_procurement_event(previous, event):
         raise ServiceError("PROCUREMENT_EVENT_DUPLICATE", 409)
     resolved = content["resolved"]
     parent = None
-    if kind not in {"QUOTE", "SCENARIO", "COHORT", "SUBSTITUTION"} and not (kind == "PRODUCTION" and content.get("lot_code")):
+    if kind not in {"QUOTE", "SCENARIO", "COHORT", "SUBSTITUTION", "CLAIM_INTAKE"} and not (kind == "PRODUCTION" and content.get("lot_code")):
         parent_ref = resolved.get("parent", {})
         parent = documents.get(parent_ref.get("id"))
         if (not parent or any(parent[key] != parent_ref[ref] for key, ref in
@@ -99,6 +99,22 @@ def apply_procurement_event(previous, event):
         if item_entity:
             item_entity.setdefault("attributes", {}).update(substitute_status="APPROVED",
                 counted_qty_for_selected_demand=candidate["counted_qty_for_selected_demand"])
+
+    if kind == "CLAIM_INTAKE":
+        # C claim intake: a confirmed customer report, not a confirmed failure. Board
+        # states and quantities do not change; the graph projection is added in S6.
+        claims = snapshot.setdefault("claims", {"intakes": [], "scope": "INTERNAL_DEVELOPMENT_ONLY"})
+        if any(x["claim_ref"] == typed.claim_ref for x in claims["intakes"]):
+            raise ServiceError("CLAIM_EVENT_DUPLICATE", 409)
+        boards = (snapshot.get("fulfillment") or {}).get("boards", {})
+        if [u["serial"] for u in resolved["units"]] != typed.board_serials or any(
+                (u["match_state"] == "LINKED") != (u["serial"] in boards) for u in resolved["units"]):
+            raise ServiceError("CLAIM_EVENT_BASIS_INVALID", 409)
+        claims["intakes"].append({"document_id": identifier, "claim_ref": typed.claim_ref, "customer_name": typed.customer_name,
+                                  "reported_at": typed.reported_at, "reported_symptom": typed.reported_symptom,
+                                  "requested_due_date": typed.requested_due_date, "claimed_qty": typed.quantity,
+                                  "units": deepcopy(resolved["units"]), "intake_state": "CONFIRMED",
+                                  "ledger_version": version, "provenance": typed.provenance})
 
     inventory = snapshot.setdefault("current_inventory", deepcopy(snapshot["opening_balance"]["inventory"]))
     receipt = None
@@ -266,6 +282,9 @@ def apply_procurement_event(previous, event):
              "RECEIPT": "PartsReceiptLine", "IQC": "InspectionResult", "CANCEL": "SourceDocument",
              "PRODUCTION": "ProductionReport", "FG_RECEIPT": "FinishedGoodsReceipt", "SHIPMENT": "Shipment", "ARRIVAL": "ArrivalRecord",
              "SCENARIO": "ScenarioRun", "SUBSTITUTION": "SourceDocument",
+             # Until the claim T-Box extension is projected (S6) the confirmed customer
+             # report is the source document it already is in the v1.7 schema.
+             "CLAIM_INTAKE": "SourceDocument",
              "COHORT": {"FG_RECEIPT": "FinishedGoodsReceipt", "SHIPMENT": "Shipment", "ARRIVAL": "ArrivalRecord"}.get(content.get("stage"), "SourceDocument")}[kind]
     attributes = {"document_id": identifier, "kind": kind, "status": "POSTED", "quantity": getattr(typed, "quantity", 0),
                   "supplier_confirmation": False, "transmission_status": "NOT_SENT"}
@@ -287,6 +306,11 @@ def apply_procurement_event(previous, event):
                           original_item_id=resolved["original_item_id"], candidate_item_id=resolved["candidate_item_id"],
                           unit=resolved["unit"], provenance="DEMO_APPLICATION_APPROVAL",
                           approval_scope="DEMO_APPLICATION_NOT_TECHNICAL_REVIEW")
+    elif kind == "CLAIM_INTAKE":
+        attributes.update(claim_ref=typed.claim_ref, customer_name=typed.customer_name, reported_at=typed.reported_at,
+                          reported_symptom=typed.reported_symptom, claimed_qty=typed.quantity, board_serials=list(typed.board_serials),
+                          linked_qty=resolved["linked_qty"], not_found_serials=list(resolved["not_found_serials"]),
+                          source_sha256=typed.source_sha256, provenance=typed.provenance, confirmed_failure=False)
     elif kind == "SCENARIO":
         attributes.update(scenario_ref=typed.scenario_ref, round_id=resolved["round_id"], provenance="DEMO_ASSUMPTION",
                           assumption_status="APPROVED_ASSUMPTION_NOT_FACT")
@@ -299,6 +323,7 @@ def apply_procurement_event(previous, event):
                          typed.scenario_ref if kind == "SCENARIO"
                          else f"대체 {typed.candidate_item_id} {typed.quantity}개" if kind == "SUBSTITUTION"
                          else f"기초 보드 {dict(FG_RECEIPT='입고', SHIPMENT='출하', ARRIVAL='도착')[typed.stage]} {typed.quantity}대" if kind == "COHORT"
+                         else f"클레임 {typed.claim_ref}" if kind == "CLAIM_INTAKE"
                          else kind + " " + identifier[:8])
     revision = node("version", "DocumentVersion", {"version": value["document_version"], "payload_hash": value["payload_hash"]}, kind + " version")
     grant = node("approval", "ApprovalGrant", approval, kind + " approval")

@@ -1,6 +1,6 @@
 # C 클레임·재생산 대응 → ontologics-chat 통합 계획
 
-- 상태: **IN_PROGRESS** · S0·S1 완료 (2026-11-20)
+- 상태: **IN_PROGRESS** · S0·S1·S2 완료 (2026-11-20)
 - 작업 위치: `yumimnmn/ontologics-portfolio` · 브랜치 `feature/claim-integration` · 폴더 `ontologics-unified/`
 - 기준: `ontologics-unified/` = `Ontologics-2Zo/ontologics-chat` `4448b7a` 복사본. C 원본은 `Ontologics-2Zo/ontologics` `479a45d`의 `ontologics/claim_response/`
 - 원본 폴더 `ontologics-chat/`, `ontologics/`는 수정하지 않는다.
@@ -91,6 +91,18 @@ chat은 PostgreSQL 원장이 진실이고 RDF/Neo4j는 투영이다. 투영 payl
 - `data/claim_response/claims/`: C 가상 클레임 샘플(메일·엑셀·CSV·기대 결과) 그대로.
 - `tests/test_claim_intake.py`: C `test_intake.py` 15개 이식. 팀 공통 `validate_graph` 대신 근거 연결(SourceDocument→Evidence→ClaimIntake)과 ClaimIntake 필드 계약을 검사.
 - 검증: 이식 테스트 15 통과 · 전체 Python 545 통과(13 건너뜀, 기준선과 같은 이유) · JS 248 통과.
+
+## 3-8. S2 결과 — 클레임 접수를 원장 사건으로
+
+chat의 업무 문서 경로(`procurement_documents` · 작성 → 다른 계정 검토·승인 → 원장 반영 · `ProcurementPosted` 사건 · Outbox)를 그대로 재사용한다. 새 테이블·새 사건 종류 없이 문서 종류만 추가했다.
+- `migrations/015_claim_documents.sql`: 문서 종류에 `CLAIM_INTAKE`, `CONTAINMENT`, `TEST_REQUEST`, `TEST_RESULT`, `REPRODUCTION` 허용 (S2는 `CLAIM_INTAKE`만 사용).
+- `ClaimIntakeContent`: 접수 변환 결과(클레임 번호·고객사·신고 시각(시간대 필수)·증상·희망 기한·일련번호·수량·원본 hash/위치).
+- `_resolve_claim`: 일련번호를 원장의 보드(`fulfillment.boards`)에 연결. 없는 번호는 `NOT_FOUND`로 남기고 추측하지 않는다. 보드의 생산·로트·출하·도착 문서 ID를 함께 기록.
+- 원장 반영: 스냅샷 `claims.intakes`에 기록. 보드 상태·재고·회차 수량은 바꾸지 않는다(고객 신고 ≠ 확인된 불량).
+- 그래프: S6 전까지는 v1.7에 있는 `SourceDocument`로 투영(그래프 READY 유지).
+- 사건 목록 표시: `클레임 접수 기록`.
+- 테스트 `tests/test_claim_documents.py` 4개: 연결·미연결, 상태 불변, 자기검토 금지, 같은 클레임 번호 1회, 계약 검사.
+- 검증: 전체 Python 549 통과(13 건너뜀) · JS 248 통과.
 
 ## 4. 단계별 작업 (각 단계 끝에 테스트 통과 후 커밋)
 

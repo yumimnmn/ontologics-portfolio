@@ -185,13 +185,60 @@ class SubstitutionContent(PurchaseContent):
     provenance: Literal["DEMO_APPLICATION_APPROVAL"] = "DEMO_APPLICATION_APPROVAL"
 
 
+class ClaimIntakeContent(PurchaseContent):
+    """C claim intake confirmed by a person (claim_response). Values come from the
+    deterministic mail/Excel/CSV conversion; serial links are resolved against the
+    ledger's named boards and are never invented."""
+    kind: Literal["CLAIM_INTAKE"] = "CLAIM_INTAKE"
+    claim_ref: str = Field(min_length=1, max_length=100)
+    customer_name: str = Field(min_length=1, max_length=200)
+    reported_at: str = Field(min_length=10, max_length=40)
+    reported_symptom: str = Field(min_length=1, max_length=2000)
+    reported_conditions: str | None = Field(default=None, max_length=2000)
+    requested_action: str | None = Field(default=None, max_length=2000)
+    delivery_reference: str | None = Field(default=None, max_length=100)
+    requested_due_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    board_serials: list[str] = Field(min_length=1, max_length=500)
+    quantity: int = Field(ge=1, le=100000)
+    source_format: Literal["eml", "xlsx", "csv"]
+    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_locator: str = Field(min_length=1, max_length=300)
+    provenance: Literal["SYNTHETIC_CLAIM"] = "SYNTHETIC_CLAIM"
+
+    @field_validator("reported_at")
+    @classmethod
+    def explicit_offset(cls, value):
+        from datetime import datetime
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if "T" not in value or parsed.utcoffset() is None:
+            raise ValueError("CLAIM_REPORTED_AT_TIMEZONE_REQUIRED")
+        return value
+
+    @field_validator("requested_due_date")
+    @classmethod
+    def due_date(cls, value):
+        date.fromisoformat(value)
+        return value
+
+    @field_validator("board_serials")
+    @classmethod
+    def unique_serials(cls, value):
+        if len(set(value)) != len(value) or any(not item.strip() or len(item) > 100 for item in value):
+            raise ValueError("CLAIM_SERIALS_INVALID")
+        return value
+
+
 ProcurementContent = Annotated[Union[QuoteContent, RequestContent, OrderContent, ReceiptContent,
                                     SupplyConfirmationContent, InspectionContent, CancelContent,
-                                    ProductionContent, FinishedGoodsContent, ShipmentContent, ArrivalContent, ScenarioContent, CohortContent, SubstitutionContent], Field(discriminator="kind")]
+                                    ProductionContent, FinishedGoodsContent, ShipmentContent, ArrivalContent, ScenarioContent, CohortContent, SubstitutionContent,
+                                    ClaimIntakeContent], Field(discriminator="kind")]
 CONTENT_TYPES = {cls.model_fields["kind"].default: cls for cls in
                  (QuoteContent, RequestContent, OrderContent, ReceiptContent, SupplyConfirmationContent, InspectionContent, CancelContent,
-                  ProductionContent, FinishedGoodsContent, ShipmentContent, ArrivalContent, ScenarioContent, CohortContent, SubstitutionContent)}
+                  ProductionContent, FinishedGoodsContent, ShipmentContent, ArrivalContent, ScenarioContent, CohortContent, SubstitutionContent,
+                  ClaimIntakeContent)}
 FULFILLMENT_KINDS = {"PRODUCTION", "FG_RECEIPT", "SHIPMENT", "ARRIVAL"}
+# C claim response documents (claim_response). Each needs a person's independent approval.
+CLAIM_KINDS = {"CLAIM_INTAKE"}
 # Order-to-arrival steps that the dashboard and the Agent write one at a time.
 FLOW_DRAFT_KINDS = {"PO", "SUPPLY_CONFIRMATION", "RECEIPT", "IQC", "CANCEL", "COHORT"} | FULFILLMENT_KINDS
 

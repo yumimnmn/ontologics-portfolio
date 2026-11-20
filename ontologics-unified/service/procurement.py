@@ -16,7 +16,7 @@ from service.domain import DomainService, _public
 from service.errors import ServiceError
 from service.materials import requirements_for_snapshot
 from service.procurement_state import legacy_pools
-from service.procurement_contracts import CONTENT_TYPES, FLOW_DRAFT_KINDS, FULFILLMENT_KINDS, ProcurementCreate, ProcurementReject, ProcurementRevise
+from service.procurement_contracts import CLAIM_KINDS, CONTENT_TYPES, FLOW_DRAFT_KINDS, FULFILLMENT_KINDS, ProcurementCreate, ProcurementReject, ProcurementRevise
 
 
 def quote_calculation(quote, shortage):
@@ -190,6 +190,8 @@ class ProcurementService(DomainService):
     def _resolve(self, conn, company, payload, content):
         kind = content.kind
         value = content.model_dump(mode="json")
+        if kind in CLAIM_KINDS:
+            return self._resolve_claim(conn, company, payload, content)
         if kind == "COHORT":
             round_ = payload.get("current_delivery_round", payload["opening_balance"]["delivery_round"])
             if content.round_id != round_["round_id"]:
@@ -405,6 +407,27 @@ class ProcurementService(DomainService):
             raise ServiceError("FULFILLMENT_BOARD_STATE_INVALID", 409)
         return {**common, "parent": self._reference(parent)}
 
+    def _resolve_claim(self, conn, company, payload, content):
+        """C claim intake: link reported serials to the ledger's named boards.
+
+        A serial that the ledger does not hold stays NOT_FOUND for a person to check;
+        nothing is matched by similarity and no board state is changed.
+        """
+        boards = payload.get("fulfillment", {}).get("boards", {})
+        units = []
+        for serial in content.board_serials:
+            board = boards.get(serial)
+            units.append({"serial": serial, "match_state": "LINKED" if board else "NOT_FOUND",
+                          "board_status": board.get("status") if board else None,
+                          "production_id": board.get("production_id") if board else None,
+                          "lot_code": board.get("lot_code") if board else None,
+                          "shipment_id": board.get("shipment_id") if board else None,
+                          "arrival_id": board.get("arrival_id") if board else None})
+        linked = [u for u in units if u["match_state"] == "LINKED"]
+        return {"units": units, "linked_qty": len(linked), "not_found_serials": [u["serial"] for u in units if u["match_state"] == "NOT_FOUND"],
+                "claimed_qty": content.quantity, "quantity_matches_serials": content.quantity == len(units),
+                "customer_transmission": "NOT_SENT", "confirmed_failure": False}
+
     @staticmethod
     def _columns(content, resolved):
         quantity = getattr(content, "quantity", 0)
@@ -413,7 +436,7 @@ class ProcurementService(DomainService):
         elif content.kind == "SUPPLY_CONFIRMATION":
             quantity = content.confirmed_qty
         key = next((getattr(content, name) for name in ("quote_ref", "confirmation_ref", "receipt_ref", "inspection_ref",
-                                                        "production_ref", "shipment_ref", "arrival_ref", "scenario_ref", "cohort_ref") if hasattr(content, name)), None)
+                                                        "production_ref", "shipment_ref", "arrival_ref", "scenario_ref", "cohort_ref", "claim_ref") if hasattr(content, name)), None)
         # Only a receipt creates a LOT; production from an existing LOT names it without claiming it.
         lot_code = getattr(content, "lot_code", None) if content.kind == "RECEIPT" else None
         return (resolved.get("parent", {}).get("id"), key, lot_code, quantity,
