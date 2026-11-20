@@ -1,8 +1,10 @@
 // Existing supply-card flow. Commands stay explicit and server-authorized;
 // this module never sends supplier messages or changes browser-only inventory.
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const CLAIM_KINDS = new Set(['CLAIM_INTAKE', 'CONTAINMENT', 'TEST_REQUEST', 'TEST_RESULT', 'REPRODUCTION']);
 const kinds = { QUOTE: '견적 조건', PR: '구매 요청', PO: '내부 발주', SUPPLY_CONFIRMATION: '공급확인 · 모의', RECEIPT: '입하', IQC: '수입검사', CANCEL: '잔여 취소',
-  PRODUCTION: '생산 실적', FG_RECEIPT: '완성품 입고', SHIPMENT: '출하', ARRIVAL: '고객 도착' , SCENARIO: '일정 가정 시나리오' , COHORT: '기존 보드 이행', SUBSTITUTION: '대체 적용 승인' };
+  PRODUCTION: '생산 실적', FG_RECEIPT: '완성품 입고', SHIPMENT: '출하', ARRIVAL: '고객 도착' , SCENARIO: '일정 가정 시나리오' , COHORT: '기존 보드 이행', SUBSTITUTION: '대체 적용 승인',
+  CLAIM_INTAKE: '클레임 접수', CONTAINMENT: '생산 중단 · 출고 보류 요청', TEST_REQUEST: '테스트 의뢰', TEST_RESULT: '테스트 결과', REPRODUCTION: '재생산 · A 요청서' };
 const statuses = { DRAFT: '검토 전', REVIEWED: '검토 완료', APPROVED: '승인 · 반영 전', POSTED: '원장 반영' };
 const fields = {
   QUOTE: ['quote_ref', 'supplier_id', 'item_id', 'unit', 'unit_price', 'currency', 'moq', 'order_multiple', 'freight', 'valid_until', 'lead_business_days', 'provenance', 'note'],
@@ -495,7 +497,8 @@ export function mountProcurementFlow(container, { snapshot, api, getIdentity = (
   async function reload(preferred = activeId) {
     const response = await api('/api/mks2/procurement/documents');
     if (destroyed) return;
-    documents = response.documents || [];
+    // Claim documents (C 클레임 대응) are handled in the claims tab, not in the supply flow.
+    documents = (response.documents || []).filter(doc => !CLAIM_KINDS.has(doc.kind));
     // Document steps (draft, approval, ...) shown in the ledger events list.
     api('/api/mks2/procurement/activity').then(result => { if (!destroyed) onActivity(result.activity || []); }, () => {});
     activeId = documents.some(row => row.id === preferred) ? preferred : documents.at(-1)?.id || null;

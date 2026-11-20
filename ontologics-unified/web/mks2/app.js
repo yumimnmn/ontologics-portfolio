@@ -4,6 +4,7 @@ import { mountLaneGraph } from './lanegraph.js';
 import { renderQueryAnswer, updateAiSummary } from './query.js';
 import { mountTwin as mountTwin2 } from './twin2.js';
 import { mountReasoningPanel } from './reasoning_panel.js';
+import { mountClaims } from './claims.js';
 
 // UI state is ephemeral. Identity, quantities, versions and answers come from the server.
 const $ = id => document.getElementById(id);
@@ -18,7 +19,7 @@ function button(text, action, className = 'btn sm') {
   node.type = 'button'; node.addEventListener('click', action); return node;
 }
 // graph = project ontology graph tab (#network); lane = MK-S2 relationship graph (#graph).
-let snapshot, ontology, graph, lane, dashboard, twin2, identity, csrfToken;
+let snapshot, ontology, graph, lane, dashboard, twin2, claims, identity, csrfToken;
 let liveEnabled = true;
 const handledEvents = new Set();
 let contextId, twinContextId, noticeTimer, generation = 0, replayGeneration = 0, schemaMode = false;
@@ -31,7 +32,8 @@ refreshButton.id = 'refresh-ledger'; refreshButton.hidden = true;
 $('reset').before(refreshButton);
 const panels = {};
 // DEC-H65: the original digital twin tab is removed; #twin2 is the digital twin.
-const SCREENS = ['graph', 'dashboard', 'network', 'twin2'];
+// C 클레임 대응(claims)은 원장의 클레임 문서·역추적만 다루는 별도 탭이다.
+const SCREENS = ['graph', 'dashboard', 'network', 'twin2', 'claims'];
 const TWIN_SCREENS = new Set(['twin2']);
 // One toolbar button next to 초기화 opens or closes the current screen's assistant panel.
 const panelControls = {};
@@ -140,7 +142,7 @@ function updateTwinActivity() {
 function setContext(value) {
   contextId = typeof value === 'string' ? value : value?.node_id ?? value?.id;
   if (!contextId) return;
-  for (const name of ['graph', 'dashboard', 'network']) {
+  for (const name of ['graph', 'dashboard', 'network', 'claims']) {
     const panel = panels[name];
     panel.context.replaceChildren(document.createTextNode('맥락 '), button(labelFor(contextId), () => focusEvidence(contextId), 'chip'),
       document.createTextNode(` 원장 v${snapshot.meta.ledger_version}`));
@@ -155,6 +157,12 @@ function setTwinContext(value) {
     panels[name].context.replaceChildren(document.createTextNode('맥락 '), button(labelFor(selected), () => focusEvidence(selected), 'chip'),
       document.createTextNode(` 원장 v${snapshot.meta.ledger_version}`));
   }
+}
+// Claim documents appear in the graph as the claim T-Box extension classes; find the node by its document.
+function focusClaimDocument(documentId) {
+  const entity = (snapshot?.entities || []).find(row => row.evidence?.document_id === documentId);
+  if (entity) focusEvidence(entity.id);
+  else notify('이 클레임 문서는 아직 현재 조회 원장의 그래프에 없습니다. 최신 원장을 조회해 주세요.');
 }
 function focusEvidence(id) {
   cancelPendingReplay();
@@ -328,7 +336,7 @@ function createPanel(name) {
   clearAgentWaiting(panels[name]);
   const root = $(`${name}-panel`); root.replaceChildren();
   const heading = element('div', 'panel-heading');
-  const title = name === 'dashboard' ? '업무 에이전트' : name === 'network' ? '프로젝트 그래프 질의' : name === 'twin2' ? '디지털 트윈 질의' : '업무 AI 질의';
+  const title = name === 'dashboard' ? '업무 에이전트' : name === 'network' ? '프로젝트 그래프 질의' : name === 'twin2' ? '디지털 트윈 질의' : name === 'claims' ? '클레임 질의' : '업무 AI 질의';
   heading.append(element('h2', '', title), element('span', 'tag', '원장 근거 조회'));
   // Collapse the assistant into a round icon button so the dashboard or graph gets
   // the full width. A per-screen browser preference only; nothing is sent or stored on the server.
@@ -529,9 +537,10 @@ async function runQuery(name, question) {
     // take the agent path. The digital twin keeps the read API its evidence
     // highlight is built on; every screen uses it when the model is off.
     const context = TWIN_SCREENS.has(name) ? twinContextId : contextId;
+    // Without a model the claim tab asks the same read-only claim.trace tool the Agent uses.
     const answer = agentPath
       ? await agentQuery(panel, question, message, requestGeneration, context)
-      : await api('/api/mks2/query', { question, ledger_version: snapshot.meta.ledger_version,
+      : await api(name === 'claims' ? '/api/mks2/claims/query' : '/api/mks2/query', { question, ledger_version: snapshot.meta.ledger_version,
         context_entity_id: context || undefined });
     if (!answer) return;
     if (generation !== requestGeneration) return;
@@ -693,7 +702,7 @@ async function showReasoning(target) {
 function invalidateView() {
   for (const panel of Object.values(panels)) { settleAnswer(panel, true); clearAgentWaiting(panel); }
   generation++; requests.abort(); requests = new AbortController(); cancelPendingReplay();
-  graph?.destroy(); lane?.destroy(); dashboard?.destroy(); twin2?.destroy(); graph = null; lane = null; dashboard = null; twin2 = null; snapshot = null; ontology = null; twinContextId = null;
+  graph?.destroy(); lane?.destroy(); dashboard?.destroy(); twin2?.destroy(); claims?.destroy(); graph = null; lane = null; dashboard = null; twin2 = null; claims = null; snapshot = null; ontology = null; twinContextId = null;
   handledEvents.clear();
   for (const name of SCREENS) { $(`${name}-view`).hidden = true; $(`${name}-panel`).replaceChildren(); }
   $('load-state').hidden = false; $('load-state').textContent = '서버의 개발 계정을 선택해 원장을 조회하세요.';
@@ -745,6 +754,10 @@ async function loadSnapshot({ preserveMessages = false } = {}) {
   twin2?.destroy();
   twin2 = mountTwin2($('twin2-stage'), { snapshot, ontology, labelFor, onSelect: setTwinContext,
     onAsk: text => fillQuestion(text, 'twin2'), onGraph: focusEvidence });
+  claims?.destroy();
+  claims = mountClaims($('claims-stage'), { snapshot, api, getIdentity: () => identity,
+    onAsk: text => fillQuestion(text, 'claims'), onGraph: focusClaimDocument,
+    onPosted: () => { refreshButton.textContent = '업무 반영 · 최신 원장 조회'; notify(liveEnabled ? '클레임 문서가 원장에 반영됐습니다. 그래프 투영 후 화면이 자동으로 갱신됩니다.' : '클레임 문서가 반영됐습니다. 그래프 준비 후 최신 원장을 조회해 주세요.'); pollChanges(); } });
   const initialNode = data.graph.data.nodes.find(node => node.entity_ref?.entity_type === 'delivery_round' || node.type === 'DeliveryRound');
   const initialContext = initialNode?.node_id || initialNode?.id;
   if (initialContext) setContext(initialContext);

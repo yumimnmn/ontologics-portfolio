@@ -260,7 +260,7 @@ def create_app(db, *, private_root: str, origin="http://127.0.0.1:8870", dev_mod
     mount_procurement_api(app, db=db, identity=identity, ledger=ledger, gateway=gateway,
                          principal=principal, context=context, verified_payload=verified_payload)
     from service.claim_api import mount_claim_api
-    mount_claim_api(app, ledger=ledger, gateway=gateway, principal=principal, verified_payload=verified_payload)
+    mount_claim_api(app, ledger=ledger, gateway=gateway, principal=principal, verified_payload=verified_payload, context=context)
     from service.reservations import ReservationCreate, ReservationService
     reservations=ReservationService(db,identity)
     app.state.reservations=reservations

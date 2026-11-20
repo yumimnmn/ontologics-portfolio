@@ -384,6 +384,33 @@ class ServiceApiIntegrationTests(unittest.TestCase):
             self.assertEqual(conn.execute("SELECT count(*) AS n FROM ledger_events").fetchone()["n"], 1)
             self.assertEqual(conn.execute("SELECT count(*) AS n FROM documents").fetchone()["n"], 0)
 
+    def test_claim_endpoints_are_read_only_and_convert_only_fixed_samples(self):
+        session = self.select()
+        self.mark_projection_ready()
+        view = self.client.get("/api/mks2/claims")
+        self.assertEqual(view.status_code, 200, view.text)
+        self.assertEqual(view.json()["claims"], [])
+        self.assertEqual(view.json()["ledger_mutations"], 0)
+        answer = self.client.post("/api/mks2/claims/query", json={"question": "클레임 영향 범위", "ledger_version": 1},
+                                  headers=self.headers(session))
+        self.assertEqual(answer.status_code, 200, answer.text)
+        self.assertEqual(answer.json()["status"], "UNKNOWN")
+        self.assertEqual(answer.json()["tool_name"], "claim.trace")
+        self.assertEqual((answer.json()["model_calls"], answer.json()["ledger_mutations"]), (0, 0))
+        self.error(self.client.post("/api/mks2/claims/query", json={"question": "클레임", "ledger_version": 1}, headers=self.headers()),
+                   403, "CSRF_REJECTED")
+        converted = self.client.post("/api/mks2/claims/convert", json={"sample": "claim_table.csv", "collected_at": "2026-11-20T10:00:00+09:00"},
+                                     headers=self.headers(session))
+        self.assertEqual(converted.status_code, 200, converted.text)
+        self.assertEqual(converted.json()["draft"]["kind"], "CLAIM_INTAKE")
+        self.assertEqual(converted.json()["draft"]["provenance"], "SYNTHETIC_CLAIM")
+        for sample in ("../.env", "claim_mail.eml/../../AGENTS.md", "other.csv"):
+            self.error(self.client.post("/api/mks2/claims/convert", json={"sample": sample, "collected_at": "2026-11-20T10:00:00+09:00"},
+                                        headers=self.headers(session)), 422, "CLAIM_SAMPLE_NOT_ALLOWED")
+        with self.db.connect() as conn:
+            self.assertEqual(conn.execute("SELECT count(*) AS n FROM ledger_events").fetchone()["n"], 1)
+            self.assertEqual(conn.execute("SELECT count(*) AS n FROM procurement_documents").fetchone()["n"], 0)
+
     def test_query_selection_is_checked_against_the_authorized_snapshot(self):
         session = self.select()
         self.mark_projection_ready()
@@ -430,6 +457,7 @@ class ServiceApiIntegrationTests(unittest.TestCase):
                   "/mks2/twin2.js": "mks2/twin2.js", "/mks2/twin2.css": "mks2/twin2.css",
                   "/mks2/material_watch.js": "mks2/material_watch.js",
                   "/mks2/reasoning_panel.js": "mks2/reasoning_panel.js",
+                  "/mks2/claims.js": "mks2/claims.js",
                   "/mks2/vendor/three/three.module.min.js": "mks2/vendor/three/three.module.min.js",
                   "/mks2/vendor/three/OrbitControls.js": "mks2/vendor/three/OrbitControls.js",
                   "/mks2/vendor/three/CSS2DRenderer.js": "mks2/vendor/three/CSS2DRenderer.js"}

@@ -68,6 +68,8 @@ async function setup({ animated = false, reduced = false, agent = 'fake' } = {})
         highlight(value) { this.highlights.push(value); }, reset() { this.resets++; } };
       twins.push(instance); return instance;
     },
+    // C claim tab (#claims); its own document flow is tested in test_claims_ui.mjs.
+    mountClaims: () => ({ destroy() {}, refresh() {} }),
     updateAiSummary: () => true,
     renderQueryAnswer: (message, answer, options) => {
       let resolve;

@@ -194,7 +194,7 @@ def answer_claim(question: str, payload: dict) -> dict:
     for r in claim["reproductions"]:
         lines.append(f"A 전달 요청서 {r['reproduction_ref']}: 양품 {r['required_good_quantity']}대 · 희망 기한 {r['requested_due_date']} · 미송부")
     status = "PARTIAL" if claim["not_found_serials"] or claim["untraceable_opening_boards"] else "ANSWERED"
-    return {"status": status, "intent": "claim", "answer": "\n".join(lines), "claim": claim,
+    return {"status": status, "intent": "claim", "answer": "\n\n".join(lines), "claim": claim,
             "evidence_ids": sorted({claim["intake_document_id"], *(c["document_id"] for c in claim["containments"]),
                                     *(c["document_id"] for c in claim["test_requests"]), *(c["document_id"] for c in claim["test_results"]),
                                     *(c["document_id"] for c in claim["reproductions"])}),
