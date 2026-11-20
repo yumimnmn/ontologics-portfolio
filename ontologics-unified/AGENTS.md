@@ -148,3 +148,7 @@ E2E 시연에서 사람은 승인·확정만 한다. 작성자 계정 화면에�
 ## OWL RL 추론 검사 · DEC-H67
 
 SHACL+RDFS 옆에 OWL 2 RL 검사(`service/reasoning.py`)를 둔다. 모순(disjoint)·유형 불일치(추론 클래스를 선언 유형이 함의하지 않음)·추론 관계를 보고하며, 결과는 프로젝트 그래프의 "논리 검사"에 표시만 한다. 그래프 READY·수량·답변·승인에 쓰지 않고 T-Box를 바꾸지 않는다. 재측정은 `dev/measure_reasoning.py`(집계만 출력). [기록](docs/handoff/SERVICE-OWL-REASONING-20261112.md)
+
+## C 클레임·재생산 대응 통합 · DEC-H69
+
+팀 종료 후 개인 복제본(`yumimnmn/ontologics-portfolio` · `feature/claim-integration` · `ontologics-unified/`)에서 C 클레임 기능을 합쳤다. 팀 조직 레포는 바꾸지 않는다. 클레임 문서 5종은 기존 구매 문서 경로(작성·다른 계정 승인·원장 반영)를 쓰고, 고객 신고로 보드·재고·회차 수량을 바꾸지 않으며 요청서는 미송부다. 클레임 클래스는 확장 T-Box(`ontology/extensions/`)이고 공식 스키마에 같은 클래스가 있으면 쓰지 않는다. 질문은 `claim_response` Agent(`claim.trace`, 모델 호출 0), 화면은 `web/mks2/` `클레임 대응` 탭이다. 실제 v1.7 T-Box·Neo4j·모델·수동 화면 확인은 NOT_RUN. [기록](docs/handoff/SERVICE-CLAIM-INTEGRATION-20261120.md)
