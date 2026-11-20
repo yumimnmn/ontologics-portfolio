@@ -76,6 +76,15 @@ MK-S2 화면·LangGraph Agent·PostgreSQL 원장(chat)을 그대로 쓰면서, C
 chat은 PostgreSQL 원장이 진실이고 RDF/Neo4j는 투영이다. 투영 payload에 T-Box에 없는 클래스가 하나라도 있으면 `UNMAPPED_CLASS` → `VIOLATIONS` → 해당 버전 전체가 NOT_READY가 된다(`service/projections.py`).
 그래서 T-Box를 확인하기 전에는 **클레임 사건을 원장·API·화면·Agent에만 두고 그래프 투영 payload에는 넣지 않는다.** 기존 그래프는 계속 READY다. T-Box(또는 확장 파일)가 정해지면 S6에서 투영을 켠다.
 
+## 3-6-1. 확장 T-Box 결정 (2026-11-20, 윰)
+
+이 작업은 팀 레포가 아니라 개인 레포의 복제본(`ontologics-unified/`)이므로 팀 PR 합의 없이 확장 T-Box를 쓴다.
+- `ontology/extensions/tbox_claim.ttl`: 팀 공통 T-Box(`Ontologics-2Zo/ontologics@479a45d` `ontology/tbox.ttl`)의 클레임 클래스 7개
+  (`ClaimIntake`, `QualityCase`, `QualityScope`, `ContainmentRequest`, `TestRequest`, `QualityTestResult`, `ReproductionRequirement`)와 관계를 복사 + chat 노드(`BoardUnit`, `SourceDocument` 등)로 잇는 관계.
+- `ontology/extensions/shapes_claim.ttl`: C 코드의 검사 규칙(필수값·양의 정수·시간대·근거 연결)을 SHACL로 옮김.
+- 로더(`service/ontology.py`)가 v1.7과 함께 `ontology/extensions/`를 읽는다. v1.7에 같은 이름 클래스가 있으면 확장 쪽을 쓰지 않는다.
+- 순서 변경: S6(투영)을 S2 바로 다음으로 당긴다 → S0·S1 → S2 → **S6** → S3 …
+
 ## 3-7. S1 결과
 
 - `service/claim_intake.py`: C `intake.py`(Ontologics-2Zo/ontologics@479a45d) 이식. 팀 공통 모델의 `digest`·`instant`·`ROOT`만 같은 정의로 옮겼다.
