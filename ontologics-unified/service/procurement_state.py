@@ -58,7 +58,9 @@ def apply_procurement_event(previous, event):
                 (("kind", "kind"), ("version", "version"), ("payload_hash", "payload_hash"), ("ledger_version", "ledger_version")))):
             raise ServiceError("PROCUREMENT_EVENT_PARENT_INVALID", 409)
         expected_kind = {"PR": "QUOTE", "PO": "PR", "SUPPLY_CONFIRMATION": "PO", "RECEIPT": "PO", "IQC": "RECEIPT",
-                         "PRODUCTION": "IQC", "FG_RECEIPT": "PRODUCTION", "SHIPMENT": "FG_RECEIPT", "ARRIVAL": "SHIPMENT"}.get(kind)
+                         "PRODUCTION": "IQC", "FG_RECEIPT": "PRODUCTION", "SHIPMENT": "FG_RECEIPT", "ARRIVAL": "SHIPMENT",
+                         "CONTAINMENT": "CLAIM_INTAKE", "TEST_REQUEST": "CLAIM_INTAKE", "TEST_RESULT": "TEST_REQUEST",
+                         "REPRODUCTION": "TEST_RESULT"}.get(kind)
         if expected_kind and (parent["kind"] != expected_kind or parent.get("cancelled_by")):
             raise ServiceError("PROCUREMENT_EVENT_PARENT_INVALID", 409)
         if kind in {"PO", "RECEIPT"}:
@@ -115,6 +117,37 @@ def apply_procurement_event(previous, event):
                                   "requested_due_date": typed.requested_due_date, "claimed_qty": typed.quantity,
                                   "units": deepcopy(resolved["units"]), "intake_state": "CONFIRMED",
                                   "ledger_version": version, "provenance": typed.provenance})
+
+    if kind in {"CONTAINMENT", "TEST_REQUEST", "TEST_RESULT", "REPRODUCTION"}:
+        # C follow-ups: internal records only (미송부). No board, stock or round quantity changes.
+        claims = snapshot.setdefault("claims", {"intakes": [], "scope": "INTERNAL_DEVELOPMENT_ONLY"})
+        base = {"document_id": identifier, "ledger_version": version, "transmission_status": "NOT_SENT"}
+        if kind == "CONTAINMENT":
+            claims.setdefault("containments", []).append({**base, "intake_document_id": parent["id"], "containment_ref": typed.containment_ref,
+                "request_type": typed.request_type, "board_serials": list(typed.board_serials), "quantity": typed.quantity,
+                "production_ids": list(resolved["production_ids"]), "lot_codes": list(resolved["lot_codes"])})
+        elif kind == "TEST_REQUEST":
+            claims.setdefault("test_requests", []).append({**base, "intake_document_id": parent["id"], "test_request_ref": typed.test_request_ref,
+                "board_serials": list(typed.board_serials), "quantity": typed.quantity, "test_team": typed.test_team})
+        elif kind == "TEST_RESULT":
+            request = next((x for x in claims.get("test_requests", []) if x["document_id"] == parent["id"]), None)
+            done = {r["serial"] for x in claims.get("test_results", []) if x["test_request_id"] == parent["id"] for r in x["results"]}
+            rows = [r.model_dump(mode="json") for r in typed.results]
+            if request is None or not {r["serial"] for r in rows} <= set(request["board_serials"]) or {r["serial"] for r in rows} & done:
+                raise ServiceError("CLAIM_EVENT_BASIS_INVALID", 409)
+            claims.setdefault("test_results", []).append({**base, "test_request_id": parent["id"], "intake_document_id": request["intake_document_id"],
+                "test_result_ref": typed.test_result_ref, "results": rows})
+        else:
+            from service.claim_trace import reproduction_summary
+            result = next((x for x in claims.get("test_results", []) if x["document_id"] == parent["id"]), None)
+            summary = reproduction_summary(snapshot, result["test_request_id"]) if result else None
+            if (not summary or summary["required_good_quantity"] != typed.quantity
+                    or any(x["test_request_id"] == result["test_request_id"] for x in claims.get("reproductions", []))):
+                raise ServiceError("CLAIM_EVENT_BASIS_INVALID", 409)
+            claims.setdefault("reproductions", []).append({**base, "test_result_id": parent["id"], "test_request_id": result["test_request_id"],
+                "reproduction_ref": typed.reproduction_ref, "required_good_quantity": typed.quantity,
+                "assessment_state": summary["assessment_state"], "requested_due_date": resolved["a_request"]["requested_due_date"],
+                "configuration_id": resolved["a_request"]["configuration_id"], "summary": summary})
 
     inventory = snapshot.setdefault("current_inventory", deepcopy(snapshot["opening_balance"]["inventory"]))
     receipt = None
@@ -283,7 +316,8 @@ def apply_procurement_event(previous, event):
              "PRODUCTION": "ProductionReport", "FG_RECEIPT": "FinishedGoodsReceipt", "SHIPMENT": "Shipment", "ARRIVAL": "ArrivalRecord",
              "SCENARIO": "ScenarioRun", "SUBSTITUTION": "SourceDocument",
              # C claim response classes come from the claim T-Box extension (ontology/extensions).
-             "CLAIM_INTAKE": "ClaimIntake",
+             "CLAIM_INTAKE": "ClaimIntake", "CONTAINMENT": "ContainmentRequest", "TEST_REQUEST": "TestRequest",
+             "TEST_RESULT": "QualityTestResult", "REPRODUCTION": "ReproductionRequirement",
              "COHORT": {"FG_RECEIPT": "FinishedGoodsReceipt", "SHIPMENT": "Shipment", "ARRIVAL": "ArrivalRecord"}.get(content.get("stage"), "SourceDocument")}[kind]
     attributes = {"document_id": identifier, "kind": kind, "status": "POSTED", "quantity": getattr(typed, "quantity", 0),
                   "supplier_confirmation": False, "transmission_status": "NOT_SENT"}
@@ -310,6 +344,18 @@ def apply_procurement_event(previous, event):
                           reported_symptom=typed.reported_symptom, claimed_qty=typed.quantity, board_serials=list(typed.board_serials),
                           linked_qty=resolved["linked_qty"], not_found_serials=list(resolved["not_found_serials"]),
                           source_sha256=typed.source_sha256, provenance=typed.provenance, confirmed_failure=False)
+    elif kind == "CONTAINMENT":
+        attributes.update(containment_ref=typed.containment_ref, request_type=typed.request_type, board_serials=list(typed.board_serials))
+    elif kind == "TEST_REQUEST":
+        attributes.update(test_request_ref=typed.test_request_ref, board_serials=list(typed.board_serials), test_team=typed.test_team)
+    elif kind == "TEST_RESULT":
+        attributes.update(test_result_ref=typed.test_result_ref, results=[r.model_dump(mode="json") for r in typed.results],
+                          failed_qty=sum(r.outcome == "fail" for r in typed.results))
+    elif kind == "REPRODUCTION":
+        summary = resolved["summary"]
+        attributes.update(reproduction_ref=typed.reproduction_ref, required_good_quantity=typed.quantity,
+                          assessment_state=summary["assessment_state"], unresolved_quantity=summary["unresolved_quantity"],
+                          requested_due_date=resolved["a_request"]["requested_due_date"])
     elif kind == "SCENARIO":
         attributes.update(scenario_ref=typed.scenario_ref, round_id=resolved["round_id"], provenance="DEMO_ASSUMPTION",
                           assumption_status="APPROVED_ASSUMPTION_NOT_FACT")
@@ -323,6 +369,10 @@ def apply_procurement_event(previous, event):
                          else f"대체 {typed.candidate_item_id} {typed.quantity}개" if kind == "SUBSTITUTION"
                          else f"기초 보드 {dict(FG_RECEIPT='입고', SHIPMENT='출하', ARRIVAL='도착')[typed.stage]} {typed.quantity}대" if kind == "COHORT"
                          else f"클레임 {typed.claim_ref}" if kind == "CLAIM_INTAKE"
+                         else f"{dict(PRODUCTION_STOP='생산 중단', SHIPMENT_HOLD='출고 보류')[typed.request_type]} 요청 {typed.containment_ref}" if kind == "CONTAINMENT"
+                         else f"테스트 의뢰 {typed.test_request_ref}" if kind == "TEST_REQUEST"
+                         else f"테스트 결과 {typed.test_result_ref}" if kind == "TEST_RESULT"
+                         else f"재생산 {typed.quantity}대 {typed.reproduction_ref}" if kind == "REPRODUCTION"
                          else kind + " " + identifier[:8])
     revision = node("version", "DocumentVersion", {"version": value["document_version"], "payload_hash": value["payload_hash"]}, kind + " version")
     grant = node("approval", "ApprovalGrant", approval, kind + " approval")
@@ -336,6 +386,10 @@ def apply_procurement_event(previous, event):
         source = node("evidence", "Evidence", evidence, kind + " evidence")
         edge(node_id(parent["id"]), "supportedBy", source)
         edge(document_node, "supportedBy", source)
+    claim_parent_link = {"CONTAINMENT": "intake_id", "TEST_REQUEST": "intake_id", "TEST_RESULT": "test_request_id",
+                         "REPRODUCTION": "test_result_ids"}.get(kind)
+    if claim_parent_link:
+        edge(document_node, claim_parent_link, node_id(parent["id"]))
     if kind == "CLAIM_INTAKE":
         # Only ledger boards are linked; NOT_FOUND serials stay in the attributes for a person.
         for unit in resolved["units"]:

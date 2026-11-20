@@ -33,3 +33,5 @@ o:reported_at a owl:DatatypeProperty ; rdfs:domain o:ClaimIntake ; rdfs:range xs
 o:reported_symptom a owl:DatatypeProperty ; rdfs:domain o:ClaimIntake ; rdfs:range xsd:string .
 o:claimed_qty a owl:DatatypeProperty ; rdfs:domain o:ClaimIntake ; rdfs:range xsd:integer .
 o:confirmed_failure a owl:DatatypeProperty ; rdfs:domain o:ClaimIntake ; rdfs:range xsd:boolean .
+o:required_good_quantity a owl:DatatypeProperty ; rdfs:domain o:ReproductionRequirement ; rdfs:range xsd:integer ;
+  rdfs:label "재생산 필요 양품 수량"@ko .

@@ -228,17 +228,84 @@ class ClaimIntakeContent(PurchaseContent):
         return value
 
 
+class ContainmentContent(PurchaseContent):
+    """C step 4: production stop / shipment hold request for boards in the traced scope.
+    An internal request draft; it is never sent to production or logistics."""
+    kind: Literal["CONTAINMENT"] = "CONTAINMENT"
+    claim_intake_id: str = Field(min_length=1, max_length=100)
+    containment_ref: str = Field(min_length=1, max_length=100)
+    request_type: Literal["PRODUCTION_STOP", "SHIPMENT_HOLD"]
+    board_serials: list[str] = Field(min_length=1, max_length=500)
+    quantity: int = Field(ge=1, le=100000)
+
+    @field_validator("board_serials")
+    @classmethod
+    def unique_serials(cls, value):
+        if len(set(value)) != len(value):
+            raise ValueError("CLAIM_SERIALS_INVALID")
+        return value
+
+
+class ClaimTestRequestContent(PurchaseContent):
+    """C step 5: hand the claimed (and in-scope) boards to the test team."""
+    kind: Literal["TEST_REQUEST"] = "TEST_REQUEST"
+    claim_intake_id: str = Field(min_length=1, max_length=100)
+    test_request_ref: str = Field(min_length=1, max_length=100)
+    board_serials: list[str] = Field(min_length=1, max_length=500)
+    quantity: int = Field(ge=1, le=100000)
+    test_team: str = Field(default="테스트팀", min_length=1, max_length=100)
+
+    @field_validator("board_serials")
+    @classmethod
+    def unique_serials(cls, value):
+        if len(set(value)) != len(value):
+            raise ValueError("CLAIM_SERIALS_INVALID")
+        return value
+
+
+class ClaimTestBoardResult(Contract):
+    serial: str = Field(min_length=1, max_length=100)
+    outcome: Literal["fail", "pass", "not_reproduced"]
+    # Decided and returned by the test team together with the result (team decision 2026-10-29).
+    disposition: Literal["customer_replacement", "stock_replacement", "no_action", "unresolved"]
+
+
+class ClaimTestResultContent(PurchaseContent):
+    """C step 6: the test team's results and per-board dispositions, recorded by C."""
+    kind: Literal["TEST_RESULT"] = "TEST_RESULT"
+    test_request_id: str = Field(min_length=1, max_length=100)
+    test_result_ref: str = Field(min_length=1, max_length=100)
+    results: list[ClaimTestBoardResult] = Field(min_length=1, max_length=500)
+    quantity: int = Field(ge=1, le=100000)
+
+    @model_validator(mode="after")
+    def one_result_per_board(self):
+        serials = [row.serial for row in self.results]
+        if len(set(serials)) != len(serials) or self.quantity != len(serials):
+            raise ValueError("TEST_RESULT_BOARDS_INVALID")
+        return self
+
+
+class ReproductionContent(PurchaseContent):
+    """C step 6-3/6-5: reproduction quantity for A, calculated by the server from the
+    posted test results. The request is recorded, never sent (미송부)."""
+    kind: Literal["REPRODUCTION"] = "REPRODUCTION"
+    test_result_id: str = Field(min_length=1, max_length=100)
+    reproduction_ref: str = Field(min_length=1, max_length=100)
+    quantity: int = Field(ge=0, le=100000)
+
+
 ProcurementContent = Annotated[Union[QuoteContent, RequestContent, OrderContent, ReceiptContent,
                                     SupplyConfirmationContent, InspectionContent, CancelContent,
                                     ProductionContent, FinishedGoodsContent, ShipmentContent, ArrivalContent, ScenarioContent, CohortContent, SubstitutionContent,
-                                    ClaimIntakeContent], Field(discriminator="kind")]
+                                    ClaimIntakeContent, ContainmentContent, ClaimTestRequestContent, ClaimTestResultContent, ReproductionContent], Field(discriminator="kind")]
 CONTENT_TYPES = {cls.model_fields["kind"].default: cls for cls in
                  (QuoteContent, RequestContent, OrderContent, ReceiptContent, SupplyConfirmationContent, InspectionContent, CancelContent,
                   ProductionContent, FinishedGoodsContent, ShipmentContent, ArrivalContent, ScenarioContent, CohortContent, SubstitutionContent,
-                  ClaimIntakeContent)}
+                  ClaimIntakeContent, ContainmentContent, ClaimTestRequestContent, ClaimTestResultContent, ReproductionContent)}
 FULFILLMENT_KINDS = {"PRODUCTION", "FG_RECEIPT", "SHIPMENT", "ARRIVAL"}
 # C claim response documents (claim_response). Each needs a person's independent approval.
-CLAIM_KINDS = {"CLAIM_INTAKE"}
+CLAIM_KINDS = {"CLAIM_INTAKE", "CONTAINMENT", "TEST_REQUEST", "TEST_RESULT", "REPRODUCTION"}
 # Order-to-arrival steps that the dashboard and the Agent write one at a time.
 FLOW_DRAFT_KINDS = {"PO", "SUPPLY_CONFIRMATION", "RECEIPT", "IQC", "CANCEL", "COHORT"} | FULFILLMENT_KINDS
 

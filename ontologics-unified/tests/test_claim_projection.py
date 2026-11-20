@@ -19,7 +19,8 @@ from service.projections import OntologyProjector
 from tests.test_claim_documents import ClaimIntakeDocumentTests, intake_content
 
 CLAIM = "urn:ontologics:"
-EXTENSION_TERMS = {"ClaimIntake", "claimReportsBoard"}
+EXTENSION_TERMS = {"ClaimIntake", "QualityCase", "QualityScope", "ContainmentRequest", "TestRequest", "QualityTestResult",
+                   "ReproductionRequirement", "claimReportsBoard", "intake_id", "case_id", "scope_id", "test_request_id", "test_result_ids"}
 
 
 def base_catalog(root: Path, snapshot: dict, *, extra_classes=()):

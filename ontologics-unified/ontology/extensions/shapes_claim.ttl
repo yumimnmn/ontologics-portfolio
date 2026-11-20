@@ -15,3 +15,23 @@ o:ClaimIntakeShape a sh:NodeShape ;
   sh:property [ sh:path o:claimed_qty ; sh:minCount 1 ; sh:maxCount 1 ; sh:minInclusive 1 ] ;
   sh:property [ sh:path o:confirmed_failure ; sh:minCount 1 ; sh:hasValue false ;
                 sh:message "고객 신고는 확인된 불량이 아닙니다" ] .
+
+o:ContainmentRequestShape a sh:NodeShape ;
+  sh:targetClass o:ContainmentRequest ;
+  sh:property [ sh:path o:intake_id ; sh:minCount 1 ; sh:maxCount 1 ; sh:class o:ClaimIntake ;
+                sh:message "봉쇄 요청은 원장에 반영된 클레임 접수 하나에 근거해야 합니다" ] .
+
+o:TestRequestShape a sh:NodeShape ;
+  sh:targetClass o:TestRequest ;
+  sh:property [ sh:path o:intake_id ; sh:minCount 1 ; sh:maxCount 1 ; sh:class o:ClaimIntake ] .
+
+o:QualityTestResultShape a sh:NodeShape ;
+  sh:targetClass o:QualityTestResult ;
+  sh:property [ sh:path o:test_request_id ; sh:minCount 1 ; sh:maxCount 1 ; sh:class o:TestRequest ;
+                sh:message "테스트 결과는 테스트 의뢰에 연결되어야 합니다" ] .
+
+o:ReproductionRequirementShape a sh:NodeShape ;
+  sh:targetClass o:ReproductionRequirement ;
+  sh:property [ sh:path o:test_result_ids ; sh:minCount 1 ; sh:class o:QualityTestResult ;
+                sh:message "재생산 수량은 테스트 결과에 근거해야 합니다" ] ;
+  sh:property [ sh:path o:required_good_quantity ; sh:minCount 1 ; sh:maxCount 1 ; sh:minInclusive 0 ] .

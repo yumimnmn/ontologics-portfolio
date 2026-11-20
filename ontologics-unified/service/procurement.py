@@ -413,6 +413,8 @@ class ProcurementService(DomainService):
         A serial that the ledger does not hold stays NOT_FOUND for a person to check;
         nothing is matched by similarity and no board state is changed.
         """
+        if content.kind != "CLAIM_INTAKE":
+            return self._resolve_claim_followup(conn, company, payload, content)
         boards = payload.get("fulfillment", {}).get("boards", {})
         units = []
         for serial in content.board_serials:
@@ -428,6 +430,71 @@ class ProcurementService(DomainService):
                 "claimed_qty": content.quantity, "quantity_matches_serials": content.quantity == len(units),
                 "customer_transmission": "NOT_SENT", "confirmed_failure": False}
 
+    def _resolve_claim_followup(self, conn, company, payload, content):
+        """C steps 4-6: containment, test request/result and reproduction for A.
+
+        Every follow-up names its posted parent; scopes and quantities are re-derived
+        from the ledger snapshot (claim_trace), never taken from the draft alone.
+        """
+        from service.claim_trace import intake_by_document, reproduction_summary, trace_intake
+        claims = payload.get("claims") or {}
+        kind = content.kind
+        if kind in {"CONTAINMENT", "TEST_REQUEST"}:
+            parent = self._parent(conn, company, content.claim_intake_id, "CLAIM_INTAKE")
+            intake = intake_by_document(payload, str(parent["id"]))
+            if intake is None:
+                raise ServiceError("CLAIM_INTAKE_NOT_IN_LEDGER", 409)
+            trace = trace_intake(payload, intake)
+            if content.quantity != len(content.board_serials):
+                raise ServiceError("CLAIM_QUANTITY_SERIAL_MISMATCH", 422)
+            if kind == "CONTAINMENT":
+                allowed = set(trace["hold_candidates"]) if content.request_type == "SHIPMENT_HOLD" else {
+                    row["serial"] for row in trace["scope"] if row["status"] == "PRODUCED"} | set(trace["hold_candidates"])
+                if not set(content.board_serials) <= allowed:
+                    raise ServiceError("CONTAINMENT_OUTSIDE_SCOPE", 409)
+                if any(set(content.board_serials) & set(x["board_serials"]) for x in claims.get("containments", [])
+                       if x["intake_document_id"] == str(parent["id"]) and x["request_type"] == content.request_type):
+                    raise ServiceError("CONTAINMENT_ALREADY_REQUESTED", 409)
+                return {"parent": self._reference(parent), "claim_ref": intake["claim_ref"], "production_ids": trace["production_ids"],
+                        "lot_codes": trace["lot_codes"], "production_line": trace["production_line"],
+                        "board_states": {s: next(r["status"] for r in trace["scope"] if r["serial"] == s) for s in content.board_serials},
+                        "transmission_status": "NOT_SENT"}
+            linked = {u["serial"] for u in intake["units"] if u["match_state"] == "LINKED"}
+            if not set(content.board_serials) <= linked | {row["serial"] for row in trace["scope"]}:
+                raise ServiceError("TEST_REQUEST_OUTSIDE_SCOPE", 409)
+            return {"parent": self._reference(parent), "claim_ref": intake["claim_ref"], "test_team": content.test_team,
+                    "transmission_status": "NOT_SENT"}
+        if kind == "TEST_RESULT":
+            parent = self._parent(conn, company, content.test_request_id, "TEST_REQUEST")
+            request = next((x for x in claims.get("test_requests", []) if x["document_id"] == str(parent["id"])), None)
+            if request is None:
+                raise ServiceError("TEST_REQUEST_NOT_IN_LEDGER", 409)
+            serials = [row.serial for row in content.results]
+            if not set(serials) <= set(request["board_serials"]):
+                raise ServiceError("TEST_RESULT_OUTSIDE_REQUEST", 409)
+            done = {row["serial"] for x in claims.get("test_results", []) if x["test_request_id"] == request["document_id"] for row in x["results"]}
+            if set(serials) & done:
+                raise ServiceError("TEST_RESULT_ALREADY_RECORDED", 409)
+            return {"parent": self._reference(parent), "intake_document_id": request["intake_document_id"],
+                    "recorded_by_role": "C_FROM_TEST_TEAM_RESULT"}
+        parent = self._parent(conn, company, content.test_result_id, "TEST_RESULT")
+        result = next((x for x in claims.get("test_results", []) if x["document_id"] == str(parent["id"])), None)
+        if result is None:
+            raise ServiceError("TEST_RESULT_NOT_IN_LEDGER", 409)
+        summary = reproduction_summary(payload, result["test_request_id"])
+        if summary is None or summary["required_good_quantity"] is None:
+            raise ServiceError("REPRODUCTION_UNDETERMINED", 409)
+        if content.quantity != summary["required_good_quantity"]:
+            raise ServiceError("REPRODUCTION_QUANTITY_CHANGED", 409)
+        if any(x["test_request_id"] == result["test_request_id"] for x in claims.get("reproductions", [])):
+            raise ServiceError("REPRODUCTION_ALREADY_RECORDED", 409)
+        intake = intake_by_document(payload, result["intake_document_id"])
+        round_ = payload.get("current_delivery_round", payload["opening_balance"]["delivery_round"])
+        return {"parent": self._reference(parent), "summary": summary, "claim_ref": intake["claim_ref"],
+                "a_request": {"required_good_quantity": summary["required_good_quantity"], "assessment_state": summary["assessment_state"],
+                              "configuration_id": round_.get("configuration_id"), "requested_due_date": intake["requested_due_date"],
+                              "transmission_status": "NOT_SENT"}}
+
     @staticmethod
     def _columns(content, resolved):
         quantity = getattr(content, "quantity", 0)
@@ -436,7 +503,8 @@ class ProcurementService(DomainService):
         elif content.kind == "SUPPLY_CONFIRMATION":
             quantity = content.confirmed_qty
         key = next((getattr(content, name) for name in ("quote_ref", "confirmation_ref", "receipt_ref", "inspection_ref",
-                                                        "production_ref", "shipment_ref", "arrival_ref", "scenario_ref", "cohort_ref", "claim_ref") if hasattr(content, name)), None)
+                                                        "production_ref", "shipment_ref", "arrival_ref", "scenario_ref", "cohort_ref", "claim_ref", "containment_ref",
+                                                        "test_request_ref", "test_result_ref", "reproduction_ref") if hasattr(content, name)), None)
         # Only a receipt creates a LOT; production from an existing LOT names it without claiming it.
         lot_code = getattr(content, "lot_code", None) if content.kind == "RECEIPT" else None
         return (resolved.get("parent", {}).get("id"), key, lot_code, quantity,

@@ -33,7 +33,8 @@ _PROCUREMENT_EVENT_LABELS = {
     "IQC": "수입검사 기록", "CANCEL": "취소 기록",
     "PRODUCTION": "생산 실적 기록", "FG_RECEIPT": "완성품 입고 기록", "SHIPMENT": "출하 기록", "ARRIVAL": "고객 도착 기록",
     "SCENARIO": "일정 가정 시나리오", "COHORT": "기존 보드 이행 기록",
-    "CLAIM_INTAKE": "클레임 접수 기록",
+    "CLAIM_INTAKE": "클레임 접수 기록", "CONTAINMENT": "생산 중단·출고 보류 요청", "TEST_REQUEST": "테스트 의뢰",
+    "TEST_RESULT": "테스트 결과 기록", "REPRODUCTION": "재생산 수량 · A 요청서",
 }
 
 
