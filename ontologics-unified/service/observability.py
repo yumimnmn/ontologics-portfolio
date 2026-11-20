@@ -45,8 +45,8 @@ _STATES = frozenset({"completed", "failed", "needs_review", "cancelled", "ok",
 
 EXECUTION_ROOT_SPAN = "agent-execution-summary-v1"
 FEATURE_NAMES = ("fulfillment", "production", "materials", "inventory", "delivery", "ontology", "unknown")
-ObservedCapability = Literal["fulfillment_read", "material_analysis", "product_review", "procurement_review", "procurement_draft"]
-ObservedStage = Literal["execution", "segment", "route", "validate", "fulfillment_read", "material_analysis", "product_review", "procurement_review",
+ObservedCapability = Literal["fulfillment_read", "material_analysis", "product_review", "procurement_review", "procurement_draft", "claim_response"]
+ObservedStage = Literal["execution", "segment", "route", "validate", "fulfillment_read", "material_analysis", "product_review", "procurement_review", "claim_response",
                         "retrieve", "compose", "propose", "approve_write", "write", "reconcile"]
 
 

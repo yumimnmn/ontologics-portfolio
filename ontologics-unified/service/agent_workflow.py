@@ -26,6 +26,8 @@ from service.agent_store import AgentStore, DurableAgentBudget, TERMINAL
 from service.agents import FulfillmentRead, MaterialAnalysis
 from service.agents.product import ProductReview
 from service.agents.procurement import ProcurementReview
+from service.agents.claim import ClaimResponse
+from service.claim_trace import is_claim_question
 from service.agents import procurement_draft
 from service.contracts import content_hash
 from service.errors import ServiceError
@@ -36,10 +38,12 @@ from service.observability import (EXECUTION_ROOT_SPAN, WorkflowObservationInput
 
 
 CAPABILITIES = {"fulfillment_read": FulfillmentRead, "material_analysis": MaterialAnalysis,
-                "product_review": ProductReview, "procurement_review": ProcurementReview}
+                "product_review": ProductReview, "procurement_review": ProcurementReview, "claim_response": ClaimResponse}
 CAPABILITY_TOOLS = {"fulfillment_read": "ledger.query", "material_analysis": "ledger.query",
-                    "product_review": "product.review", "procurement_review": "procurement.options"}
+                    "product_review": "product.review", "procurement_review": "procurement.options", "claim_response": "claim.trace"}
 MODEL_CAPABILITIES = frozenset({"fulfillment_read", "material_analysis"})
+# Routes a question may take. Claim questions are recognized deterministically (no model routing, no AI compose).
+ROUTABLE_CAPABILITIES = MODEL_CAPABILITIES | {"claim_response"}
 ROUTE_FEATURE = {"fulfillment": "fulfillment", "production": "production", "materials": "materials",
                  "inventory": "inventory", "delivery": "delivery", "ontology": "ontology",
                  "sourcing": "materials", "change": "materials", "trace": "inventory",
@@ -319,6 +323,8 @@ class AgentWorkflow:
             # A draft request is recognized deterministically; the model never picks a write.
             if procurement_draft.draft_request(request.question) is not None:
                 return {"capability": "procurement_draft", "needs_clarification": False}
+            if is_claim_question(request.question):
+                return {"capability": "claim_response", "needs_clarification": False}
             plan = interpret_question(request.question)
             # The model only receives the fixed routing flags. Narrower intents
             # map onto them (sourcing/change → materials, trace → inventory).
@@ -337,7 +343,7 @@ class AgentWorkflow:
                 capability = None
             if capability == "needs_clarification":
                 capability = None
-            if capability is not None and capability not in MODEL_CAPABILITIES:
+            if capability is not None and capability not in ROUTABLE_CAPABILITIES:
                 raise ServiceError("AGENT_ROUTE_FORBIDDEN", 403)
             return {"capability": capability, "needs_clarification": capability is None}
 

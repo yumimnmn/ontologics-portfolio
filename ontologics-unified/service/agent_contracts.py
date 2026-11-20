@@ -8,7 +8,7 @@ from service.contracts import Contract
 from service.product_contracts import ProductReviewInput
 
 
-Capability = Literal["fulfillment_read", "material_analysis", "product_review", "procurement_review", "procurement_draft"]
+Capability = Literal["fulfillment_read", "material_analysis", "product_review", "procurement_review", "procurement_draft", "claim_response"]
 # v5: a purchase-request draft write behind a human approval interrupt (T07/T14).
 WORKFLOW_VERSION = "agent-v5"
 CHECKPOINT_VERSION = "agent-state-v1"
